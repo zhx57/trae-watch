@@ -1,18 +1,21 @@
 package com.trae.watch.ui.screen
 
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
@@ -34,12 +37,19 @@ import com.trae.watch.ui.component.WatchScaffold
 /**
  * 会话详情。
  *
- * 交互参照主流 AI 对话客户端（ChatGPT / Claude / 豆包 / Kimi）的共通形态：
- *  - 消息流占满主体，自动吸底到最新一条
- *  - 输入框常驻底部，不需要跳转到独立页面
- *  - 顶部标题栏显示当前模型，可点击切换
+ * 结构：消息流（LazyColumn）+ 常驻底部输入区，与主流 AI 对话客户端一致。
  *
- * 组件全部为官方：LazyColumn + Card + OutlinedTextField + Button。
+ * 组件全部为官方 M3：
+ *  - 消息容器 → Surface（每个气泡是独立的语义容器，用颜色角色区分角色）
+ *  - 输入 → OutlinedTextField（带 label，不用 placeholder 代替标签）
+ *  - 发送 → FilledIconButton（48dp 触控靶，icon 有 contentDescription）
+ *  - 运行中 → CircularProgressIndicator（不确定进度）
+ *
+ * 角色区分不使用「纯色卡 + 阴影」，而是用容器色层次：
+ *  用户 → primaryContainer（自己说的话是界面里最需要一眼分出的）
+ *  助手 → surfaceContainerHigh（中性、可长时间阅读）
+ *  工具 → secondaryContainer（过程信息，次级强调）
+ *  错误 → errorContainer
  */
 @Composable
 fun ChatScreen(
@@ -53,6 +63,7 @@ fun ChatScreen(
     onPickModel: () -> Unit,
     onTask: () -> Unit,
 ) {
+    val cs = MaterialTheme.colorScheme
     val listState = rememberLazyListState()
     var draft by remember { mutableStateOf("") }
 
@@ -61,42 +72,34 @@ fun ChatScreen(
         subtitle = when {
             error.isNotBlank() -> error
             running -> "运行中"
-            else -> "空闲"
+            else -> modelName.ifBlank { "空闲" }
         },
         onBack = onBack,
         actions = {
-            TextButton(onClick = onPickModel) {
-                Text(
-                    text = modelName.ifBlank { "模型" },
-                    style = MaterialTheme.typography.labelMedium,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
             if (running) {
                 TextButton(onClick = onTask) {
-                    Text("任务", style = MaterialTheme.typography.labelMedium)
+                    Text("任务", style = MaterialTheme.typography.labelMedium, color = cs.primary)
                 }
             }
         },
         bottomBar = {
-            Surface(tonalElevation = 2.dp) {
+            Surface(color = cs.surfaceContainer) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(horizontal = 8.dp, vertical = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically,
+                    verticalAlignment = Alignment.Bottom,
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
                     OutlinedTextField(
                         value = draft,
                         onValueChange = { if (it.length <= 500) draft = it },
                         modifier = Modifier.weight(1f),
-                        placeholder = { Text("输入内容") },
-                        maxLines = 2,
+                        label = { Text("发消息", style = MaterialTheme.typography.labelSmall) },
                         textStyle = MaterialTheme.typography.bodySmall,
+                        maxLines = 2,
                     )
-                    Button(
+                    FilledIconButton(
                         onClick = {
                             val t = draft.trim()
                             if (t.isNotEmpty()) {
@@ -105,8 +108,12 @@ fun ChatScreen(
                             }
                         },
                         enabled = draft.isNotBlank(),
+                        modifier = Modifier.size(48.dp),
                     ) {
-                        Text("发送")
+                        androidx.compose.material3.Icon(
+                            imageVector = Icons.AutoMirrored.Filled.Send,
+                            contentDescription = "发送",
+                        )
                     }
                 }
             }
@@ -116,16 +123,25 @@ fun ChatScreen(
             Column(
                 modifier = Modifier
                     .padding(innerPadding)
-                    .fillMaxSize()
-                    .padding(24.dp),
+                    .fillMaxSize(),
                 verticalArrangement = Arrangement.Center,
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
-                Text(
-                    text = if (error.isNotBlank()) error else "还没有消息，直接输入发第一条",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                if (running) {
+                    CircularProgressIndicator(modifier = Modifier.size(28.dp), strokeWidth = 2.dp)
+                    Text(
+                        text = "等待响应",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = cs.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 8.dp),
+                    )
+                } else {
+                    EmptyState(
+                        title = if (error.isNotBlank()) error else "还没有消息",
+                        hint = "在下方输入第一条",
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                }
             }
         } else {
             LazyColumn(
@@ -133,12 +149,12 @@ fun ChatScreen(
                 modifier = Modifier
                     .padding(innerPadding)
                     .fillMaxSize(),
-                contentPadding = PaddingValues(12.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
+                contentPadding = PaddingValues(8.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
-                items(messages, key = { it.id }) { m -> MessageCard(m) }
+                items(messages, key = { it.id }) { m -> Bubble(m) }
             }
-            // 新消息吸底，和主流对话 App 一致
+            // 新消息吸底，与主流对话客户端一致
             LaunchedEffect(messages.size) {
                 if (messages.isNotEmpty()) listState.animateScrollToItem(messages.lastIndex)
             }
@@ -146,56 +162,64 @@ fun ChatScreen(
     }
 }
 
-/** 官方 Card：ElevatedCard / Card / FilledCard 三选一，这里用 tonal 区分角色 */
+/** 消息气泡：Surface + 语义容器色，不使用阴影堆层次 */
 @Composable
-private fun MessageCard(m: Message) {
+private fun Bubble(m: Message) {
     val cs = MaterialTheme.colorScheme
     val isUser = m.role == "user"
 
     val container = when (m.type) {
         "error" -> cs.errorContainer
         "tool" -> cs.secondaryContainer
-        "plan" -> cs.surfaceVariant
-        else -> if (isUser) cs.primaryContainer else cs.surfaceVariant
+        "plan" -> cs.surfaceContainerHighest
+        else -> if (isUser) cs.primaryContainer else cs.surfaceContainerHigh
     }
     val content = when (m.type) {
         "error" -> cs.onErrorContainer
         "tool" -> cs.onSecondaryContainer
         "plan" -> cs.onSurfaceVariant
-        else -> if (isUser) cs.onPrimaryContainer else cs.onSurfaceVariant
+        else -> if (isUser) cs.onPrimaryContainer else cs.onSurface
     }
 
-    Card(
+    Row(
         modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = container),
+        horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start,
     ) {
-        Column(modifier = Modifier.padding(12.dp)) {
-            if (m.type != "text") {
+        Surface(
+            modifier = Modifier.fillMaxWidth(0.92f),
+            shape = MaterialTheme.shapes.medium,
+            color = container,
+            contentColor = content,
+        ) {
+            Column(modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp)) {
+                val kind = when (m.type) {
+                    "tool" -> "工具"
+                    "plan" -> "计划"
+                    "error" -> "错误"
+                    else -> null
+                }
+                if (kind != null) {
+                    Text(
+                        text = kind,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = content.copy(alpha = 0.75f),
+                    )
+                }
                 Text(
-                    text = when (m.type) {
-                        "tool" -> "工具调用"
-                        "plan" -> "计划"
-                        "error" -> "错误"
-                        else -> m.type
-                    },
-                    style = MaterialTheme.typography.labelSmall,
-                    color = content.copy(alpha = 0.7f),
+                    text = m.text,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = content,
+                    maxLines = if (m.type == "tool") 3 else 40,
+                    overflow = TextOverflow.Ellipsis,
                 )
-            }
-            Text(
-                text = m.text,
-                style = if (isUser) MaterialTheme.typography.bodyLarge
-                else MaterialTheme.typography.bodyMedium,
-                color = content,
-                maxLines = if (m.type == "tool") 2 else 20,
-                overflow = TextOverflow.Ellipsis,
-            )
-            if (m.status == "failed") {
-                Text(
-                    text = "发送失败",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = cs.error,
-                )
+                if (m.status == "sending" || m.status == "failed") {
+                    Text(
+                        text = if (m.status == "failed") "发送失败" else "发送中",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (m.status == "failed") cs.error else cs.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 2.dp),
+                    )
+                }
             }
         }
     }

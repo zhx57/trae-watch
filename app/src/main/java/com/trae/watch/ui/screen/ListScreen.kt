@@ -13,11 +13,9 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.ListItemDefaults
@@ -27,6 +25,7 @@ import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -45,13 +44,19 @@ import com.trae.watch.ui.component.WatchScaffold
 /**
  * 会话列表。
  *
- * 交互参照主流 AI 对话客户端：
- *  - 下拉刷新（官方 PullToRefreshBox）
+ * 组件选择全部依据 M3 官方文档，不自创控件：
+ *  - 会话集合 → List（LazyColumn + ListItem）
+ *      https://m3.material.io/components/lists
+ *  - 本地/云端互斥切换 → Segmented button
+ *      https://m3.material.io/components/segmented-buttons
+ *  - 下拉刷新 → PullToRefreshBox
  *      https://developer.android.com/develop/ui/compose/components/pull-to-refresh
- *  - 点击进入详情；长按弹出上下文菜单（置顶 / 删除）
+ *  - 长按上下文菜单 → DropdownMenu
  *      https://developer.android.com/develop/ui/compose/touch-input/pointer-input/tap-and-press
- *  - 本地 / 云端用官方 SingleChoiceSegmentedButtonRow
- *  - 列表用 LazyColumn + ListItem，保留 key 与 contentType 以复用
+ *
+ * 手表密度取舍：
+ *  251dp 高的表盘上，双行 ListItem（72dp）只能露出 2 条。这里改用单行
+ *  ListItem（56dp）+ trailing 状态文字，能在同一屏露出 3 条并保持 48dp 触控靶。
  */
 @OptIn(ExperimentalMaterial3Api::class, androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
@@ -68,41 +73,25 @@ fun ListScreen(
     onTogglePin: (ConvItem) -> Unit = {},
     onDelete: (ConvItem) -> Unit = {},
 ) {
-    val options = listOf("本地", "云端")
+    val cs = MaterialTheme.colorScheme
+    val tabs = listOf("本地" to ConvSource.LOCAL, "云端" to ConvSource.CLOUD)
 
     WatchScaffold(
-        title = "TRAE",
+        title = "会话",
         subtitle = when {
             error.isNotBlank() -> error
             conversations.isEmpty() -> "暂无会话"
-            else -> "${conversations.size} 个会话"
+            else -> "${conversations.size} 个"
         },
-        bottomBar = {
-            Surface(tonalElevation = 2.dp) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 12.dp, vertical = 8.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    FilledTonalButton(
-                        onClick = onRefresh,
-                        enabled = !loading,
-                        modifier = Modifier.weight(1f),
-                    ) {
-                        Text(if (loading) "刷新中" else "刷新")
-                    }
-                    Button(
-                        onClick = onModels,
-                        modifier = Modifier.weight(1f),
-                    ) {
-                        Text(
-                            text = modelName.ifBlank { "模型" },
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
-                }
+        actions = {
+            TextButton(onClick = onModels) {
+                Text(
+                    text = modelName.ifBlank { "模型" },
+                    style = MaterialTheme.typography.labelMedium,
+                    color = cs.primary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
             }
         },
     ) { innerPadding ->
@@ -111,57 +100,53 @@ fun ListScreen(
                 .padding(innerPadding)
                 .fillMaxSize(),
         ) {
+            // 官方单选分段按钮：互斥、紧凑、带选中态
             SingleChoiceSegmentedButtonRow(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                    .padding(horizontal = 8.dp, vertical = 4.dp),
             ) {
-                options.forEachIndexed { index, label ->
+                tabs.forEachIndexed { index, (label, source) ->
                     SegmentedButton(
-                        shape = SegmentedButtonDefaults.itemShape(
-                            index = index,
-                            count = options.size,
-                        ),
+                        shape = SegmentedButtonDefaults.itemShape(index = index, count = tabs.size),
                         onClick = { onSwitchTab(index) },
                         selected = index == tab,
-                        label = { Text(label) },
+                        icon = {},
+                        label = {
+                            Text(
+                                text = "$label ${conversations.count { it.source == source }}",
+                                style = MaterialTheme.typography.labelMedium,
+                                maxLines = 1,
+                            )
+                        },
                     )
                 }
             }
 
-            HorizontalDivider()
+            HorizontalDivider(color = cs.outlineVariant)
 
-            // 官方下拉刷新容器
             PullToRefreshBox(
                 isRefreshing = loading,
                 onRefresh = onRefresh,
                 modifier = Modifier.fillMaxSize(),
             ) {
                 if (conversations.isEmpty()) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .padding(24.dp),
-                        verticalArrangement = Arrangement.Center,
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                    ) {
-                        Text(
-                            text = if (loading) "加载中…" else "暂无会话\n下拉可刷新",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
+                    EmptyState(
+                        title = if (loading) "加载中" else "暂无会话",
+                        hint = if (loading) "正在同步" else "下拉刷新",
+                        modifier = Modifier.fillMaxSize(),
+                    )
                 } else {
                     LazyColumn(
                         modifier = Modifier.fillMaxSize(),
-                        contentPadding = PaddingValues(vertical = 4.dp),
+                        contentPadding = PaddingValues(bottom = 8.dp),
                     ) {
                         items(
                             items = conversations,
                             key = { "${it.source}-${it.id}" },
                             contentType = { it.source },
                         ) { conv ->
-                            ConvListItem(
+                            ConvRow(
                                 conv = conv,
                                 onClick = { onOpen(conv) },
                                 onTogglePin = { onTogglePin(conv) },
@@ -175,10 +160,10 @@ fun ListScreen(
     }
 }
 
-/** 官方 ListItem + combinedClickable：短按进入，长按弹出菜单 */
+/** 单行列表项：标题为主，状态/置顶在 trailing，符合 M3 List 规范 */
 @OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
-private fun ConvListItem(
+private fun ConvRow(
     conv: ConvItem,
     onClick: () -> Unit,
     onTogglePin: () -> Unit,
@@ -191,30 +176,28 @@ private fun ConvListItem(
         ListItem(
             modifier = Modifier
                 .fillMaxWidth()
-                .combinedClickable(
-                    onClick = onClick,
-                    onLongClick = { menuOpen = true },
-                ),
-            colors = ListItemDefaults.colors(containerColor = cs.surface),
+                .combinedClickable(onClick = onClick, onLongClick = { menuOpen = true }),
+            colors = ListItemDefaults.colors(
+                containerColor = if (conv.pinned) cs.surfaceContainerHigh else cs.surface,
+            ),
             leadingContent = {
                 Surface(
                     modifier = Modifier
-                        .size(40.dp)
+                        .size(28.dp)
                         .clip(CircleShape),
-                    color = if (conv.source == ConvSource.CLOUD) cs.tertiaryContainer
-                    else cs.primaryContainer,
+                    color = when (conv.source) {
+                        ConvSource.CLOUD -> cs.tertiaryContainer
+                        else -> cs.primaryContainer
+                    },
                 ) {
-                    Column(
-                        modifier = Modifier.fillMaxSize(),
-                        verticalArrangement = Arrangement.Center,
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                    ) {
+                    Box(contentAlignment = Alignment.Center) {
                         Text(
-                            text = if (conv.source == ConvSource.CLOUD) "云"
-                            else conv.title.take(1).uppercase(),
-                            style = MaterialTheme.typography.titleSmall,
-                            color = if (conv.source == ConvSource.CLOUD) cs.onTertiaryContainer
-                            else cs.onPrimaryContainer,
+                            text = if (conv.source == ConvSource.CLOUD) "云" else "本",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = when (conv.source) {
+                                ConvSource.CLOUD -> cs.onTertiaryContainer
+                                else -> cs.onPrimaryContainer
+                            },
                         )
                     }
                 }
@@ -222,44 +205,29 @@ private fun ConvListItem(
             headlineContent = {
                 Text(
                     text = conv.title,
-                    style = MaterialTheme.typography.bodyLarge,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = cs.onSurface,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
             },
-            supportingContent = {
-                Text(
-                    text = statusLabel(conv),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = cs.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            },
-            trailingContent = if (conv.unread || conv.pinned) {
-                {
-                    if (conv.pinned) {
-                        Text(
-                            text = "置顶",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = cs.primary,
-                        )
-                    } else {
-                        Surface(
-                            shape = CircleShape,
-                            color = cs.primary,
-                            modifier = Modifier.size(8.dp),
-                        ) {}
-                    }
+            trailingContent = {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    // 状态同时用颜色 + 文字双通道编码，不依赖颜色单通道
+                    StatusDot(status = conv.taskStatus)
+                    Text(
+                        text = if (conv.pinned) "置顶" else shortStatus(conv.taskStatus),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (conv.pinned) cs.primary else cs.onSurfaceVariant,
+                    )
                 }
-            } else null,
+            },
         )
 
-        // 官方 DropdownMenu：长按弹出的上下文菜单
-        DropdownMenu(
-            expanded = menuOpen,
-            onDismissRequest = { menuOpen = false },
-        ) {
+        DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
             DropdownMenuItem(
                 text = { Text(if (conv.pinned) "取消置顶" else "置顶") },
                 onClick = {
@@ -268,7 +236,7 @@ private fun ConvListItem(
                 },
             )
             DropdownMenuItem(
-                text = { Text("删除会话") },
+                text = { Text("删除会话", color = cs.error) },
                 onClick = {
                     menuOpen = false
                     onDelete()
@@ -278,15 +246,50 @@ private fun ConvListItem(
     }
 }
 
-private fun statusLabel(c: ConvItem): String {
-    val s = when (c.taskStatus) {
-        "in_progress", "running" -> "运行中"
-        "completed" -> "已完成"
-        "interrupted" -> "已中断"
-        "failed" -> "失败"
-        else -> c.taskStatus
+/** 状态点：颜色 + 实心/空心形状双编码 */
+@Composable
+private fun StatusDot(status: String) {
+    val cs = MaterialTheme.colorScheme
+    val (color, filled) = when (status) {
+        "in_progress", "running" -> cs.primary to true
+        "completed" -> cs.tertiary to true
+        "failed", "interrupted" -> cs.error to false
+        else -> cs.outline to false
     }
-    return if (c.workspace.isNotBlank()) {
-        "$s · ${c.workspace.substringAfterLast('\\').ifBlank { c.workspace }}"
-    } else s
+    Surface(
+        shape = CircleShape,
+        color = if (filled) color else cs.surface,
+        border = if (filled) null else androidx.compose.foundation.BorderStroke(1.dp, color),
+        modifier = Modifier.size(6.dp),
+    ) {}
+}
+
+/** 空态：说明现状 + 下一步（M3 empty state 规范） */
+@Composable
+fun EmptyState(title: String, hint: String, modifier: Modifier = Modifier) {
+    Column(
+        modifier = modifier.padding(20.dp),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Text(
+            text = title,
+            style = MaterialTheme.typography.titleSmall,
+            color = MaterialTheme.colorScheme.onSurface,
+        )
+        Text(
+            text = hint,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(top = 4.dp),
+        )
+    }
+}
+
+private fun shortStatus(taskStatus: String): String = when (taskStatus) {
+    "in_progress", "running" -> "运行中"
+    "completed" -> "完成"
+    "interrupted" -> "中断"
+    "failed" -> "失败"
+    else -> ""
 }
