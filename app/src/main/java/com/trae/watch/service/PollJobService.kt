@@ -44,8 +44,8 @@ class PollJobService : JobService() {
         if (!graph.token.hasAccount) return false
         val worker = Thread({
             try {
-                val clis = graph.api.listClis()
-                Log.i(TAG, "poll ok, clis=${clis.size}")
+                val convs = graph.api.localConversations()
+                Log.i(TAG, "poll ok, conversations=${convs.size}")
             } catch (e: Exception) {
                 Log.w(TAG, "poll failed: ${e.message}")
             } finally {
