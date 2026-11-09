@@ -4,8 +4,10 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.trae.watch.data.auth.AppGraph
 import com.trae.watch.data.auth.PairPayload
-import com.trae.watch.data.db.Conversation
 import com.trae.watch.data.db.Message
+import com.trae.watch.data.net.ConvItem
+import com.trae.watch.data.net.ConvSource
+import com.trae.watch.data.net.ModelItem
 import com.trae.watch.data.net.SseEvent
 import com.trae.watch.data.net.SseReader
 import com.trae.watch.data.net.SseState
@@ -16,10 +18,8 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-/** 当前屏幕 */
-enum class Screen { LIST, CHAT, APPROVAL, INPUT, TASK, PAIR }
+enum class Screen { LIST, CHAT, APPROVAL, INPUT, TASK, PAIR, MODELS }
 
-/** 待审批的请求 */
 data class Approval(
     val convId: String,
     val taskId: String,
@@ -30,10 +30,12 @@ data class Approval(
 
 data class UiState(
     val screen: Screen = Screen.LIST,
-    val conversations: List<Conversation> = emptyList(),
+    val conversations: List<ConvItem> = emptyList(),
+    val allConversations: List<ConvItem> = emptyList(),
     val messages: List<Message> = emptyList(),
     val currentConvId: String = "",
     val currentTitle: String = "",
+    val currentSource: ConvSource = ConvSource.LOCAL,
     val approval: Approval? = null,
     val sseState: SseState = SseState.DISCONNECTED,
     val runningTaskId: String = "",
@@ -43,6 +45,10 @@ data class UiState(
     val hasAccount: Boolean = false,
     val screenName: String = "",
     val loading: Boolean = false,
+    val tab: Int = 0,                       // 0=本地 1=云端
+    val models: List<ModelItem> = emptyList(),
+    val selectedModel: String = "",
+    val error: String = "",
 )
 
 class MainViewModel(private val graph: AppGraph) : ViewModel() {
@@ -56,7 +62,6 @@ class MainViewModel(private val graph: AppGraph) : ViewModel() {
 
     init {
         if (graph.token.hasAccount) {
-            // 先进列表，数据在后台补
             viewModelScope.launch(Dispatchers.IO) { loadConversations() }
         } else {
             _state.value = _state.value.copy(screen = Screen.PAIR)
@@ -67,32 +72,33 @@ class MainViewModel(private val graph: AppGraph) : ViewModel() {
 
     fun loadConversations() {
         viewModelScope.launch(Dispatchers.IO) {
-            val local = graph.store.conversations()
+            val local = runCatching { graph.api.localConversations() }.getOrDefault(emptyList())
+            val cloud = runCatching { graph.api.cloudSessions() }.getOrDefault(emptyList())
+            val models = runCatching { graph.api.models() }.getOrDefault(emptyList())
+            val all = (local + cloud).sortedByDescending { it.updatedAt }
+            val defModel = models.firstOrNull { it.isDefault }?.name
+                ?: models.firstOrNull()?.name ?: ""
             withContext(Dispatchers.Main) {
-                _state.value = _state.value.copy(conversations = local, loading = false)
-            }
-            // 远端 CLI 状态作为补充
-            runCatching {
-                val remote = graph.api.listClis()
-                if (remote.isEmpty()) return@runCatching
-                val now = System.currentTimeMillis()
-                val mapped = remote.map { c ->
-                    Conversation(
-                        id = c.id,
-                        title = c.name.ifBlank { "设备 ${c.id.take(6)}" },
-                        status = c.status,
-                        updatedAt = now,
-                        unread = 0,
-                        lastSnippet = if (c.status == "online") "设备在线" else "设备离线",
-                    )
-                }
-                graph.store.upsertConversations(mapped)
-                val all = graph.store.conversations()
-                withContext(Dispatchers.Main) {
-                    _state.value = _state.value.copy(conversations = all)
-                }
+                _state.value = _state.value.copy(
+                    conversations = if (_state.value.tab == 0) local else cloud,
+                    allConversations = all,
+                    models = models,
+                    selectedModel = _state.value.selectedModel.ifBlank { defModel },
+                    loading = false,
+                    error = "",
+                )
             }
         }
+    }
+
+    fun switchTab(tab: Int) {
+        val all = _state.value.allConversations
+        val filtered = if (tab == 0) {
+            all.filter { it.source == ConvSource.LOCAL }
+        } else {
+            all.filter { it.source == ConvSource.CLOUD }
+        }
+        _state.value = _state.value.copy(tab = tab, conversations = filtered)
     }
 
     fun refresh() {
@@ -102,26 +108,25 @@ class MainViewModel(private val graph: AppGraph) : ViewModel() {
 
     // ---------------- 会话 ----------------
 
-    fun openConversation(id: String, title: String) {
+    fun openConversation(c: ConvItem) {
         _state.value = _state.value.copy(
             screen = Screen.CHAT,
-            currentConvId = id,
-            currentTitle = title,
+            currentConvId = c.id,
+            currentTitle = c.title,
+            currentSource = c.source,
             messages = emptyList(),
         )
         viewModelScope.launch(Dispatchers.IO) {
-            graph.store.markRead(id)
-            val local = graph.store.messages(id)
+            val local = graph.store.messages(c.id)
             withContext(Dispatchers.Main) {
                 _state.value = _state.value.copy(messages = local)
             }
-            // 远端拉取补充
             runCatching {
-                val body = graph.api.fetchMessages(id) ?: return@runCatching
-                val parsed = MessageParser.parse(id, body)
+                val body = graph.api.fetchMessages(c.id) ?: return@runCatching
+                val parsed = MessageParser.parse(c.id, body)
                 if (parsed.isNotEmpty()) {
                     graph.store.upsertMessages(parsed)
-                    val all = graph.store.messages(id)
+                    val all = graph.store.messages(c.id)
                     withContext(Dispatchers.Main) {
                         _state.value = _state.value.copy(messages = all)
                     }
@@ -136,16 +141,20 @@ class MainViewModel(private val graph: AppGraph) : ViewModel() {
         loadConversations()
     }
 
-    fun openInput() {
-        _state.value = _state.value.copy(screen = Screen.INPUT)
+    fun openInput() { _state.value = _state.value.copy(screen = Screen.INPUT) }
+    fun openTask() { _state.value = _state.value.copy(screen = Screen.TASK) }
+    fun openModels() { _state.value = _state.value.copy(screen = Screen.MODELS) }
+
+    fun selectModel(name: String) {
+        _state.value = _state.value.copy(selectedModel = name, screen = Screen.INPUT)
     }
 
-    fun openTask() {
-        _state.value = _state.value.copy(screen = Screen.TASK)
-    }
-
-    fun openApproval(a: Approval) {
-        _state.value = _state.value.copy(screen = Screen.APPROVAL, approval = a)
+    /** 从模型页返回：有当前会话则回聊天，否则回列表 */
+    fun returnToListFromModels() {
+        val s = _state.value
+        _state.value = s.copy(
+            screen = if (s.currentConvId.isBlank()) Screen.LIST else Screen.INPUT,
+        )
     }
 
     // ---------------- 发送 ----------------
@@ -167,14 +176,18 @@ class MainViewModel(private val graph: AppGraph) : ViewModel() {
             screen = Screen.CHAT,
             messages = _state.value.messages + localMsg,
         )
+        val model = _state.value.selectedModel
         viewModelScope.launch(Dispatchers.IO) {
-            graph.store.upsertMessages(listOf(localMsg.copy(id = localMsg.id)))
-            val r = graph.api.sendMessage(convId, text)
+            graph.store.upsertMessages(listOf(localMsg))
+            val r = graph.api.sendMessage(convId, text, model)
             withContext(Dispatchers.Main) {
                 val updated = _state.value.messages.map {
                     if (it.id == localMsg.id) it.copy(status = if (r.ok) "sent" else "failed") else it
                 }
-                _state.value = _state.value.copy(messages = updated)
+                _state.value = _state.value.copy(
+                    messages = updated,
+                    error = if (r.ok) "" else "发送失败 (${r.code})",
+                )
             }
             if (r.ok) startSse(convId)
         }
@@ -207,27 +220,14 @@ class MainViewModel(private val graph: AppGraph) : ViewModel() {
     private fun handleEvent(e: SseEvent) {
         viewModelScope.launch(Dispatchers.Main) {
             when (e.type) {
-                "msg" -> {
-                    if (e.text.isNotBlank()) {
-                        val m = Message(
-                            id = "sse-${e.seq}-${System.currentTimeMillis()}",
-                            convId = _state.value.currentConvId,
-                            seq = e.seq,
-                            role = "assistant",
-                            type = "text",
-                            text = e.text,
-                            status = "streaming",
-                            createdAt = System.currentTimeMillis(),
-                        )
-                        _state.value = _state.value.copy(messages = _state.value.messages + m)
-                    }
+                "msg" -> if (e.text.isNotBlank()) {
+                    appendMsg(e, "text", e.text)
                 }
                 "tool_call", "tool" -> {
                     val toolName = e.text.ifBlank { "工具调用" }
-                    // 需要审批的工具先弹审批页
-                    if (e.raw.contains("\"require_confirm\"") || e.raw.contains("\"confirm\"") ||
+                    val needConfirm = e.raw.contains("\"require_confirm\"") ||
                         e.raw.contains("\"need_approval\"")
-                    ) {
+                    if (needConfirm) {
                         _state.value = _state.value.copy(
                             approval = Approval(
                                 convId = _state.value.currentConvId,
@@ -239,53 +239,32 @@ class MainViewModel(private val graph: AppGraph) : ViewModel() {
                             screen = Screen.APPROVAL,
                         )
                     } else {
-                        val m = Message(
-                            id = "tool-${e.seq}-${System.currentTimeMillis()}",
-                            convId = _state.value.currentConvId,
-                            seq = e.seq,
-                            role = "assistant",
-                            type = "tool",
-                            text = toolName,
-                            status = "running",
-                            createdAt = System.currentTimeMillis(),
-                        )
-                        _state.value = _state.value.copy(messages = _state.value.messages + m)
+                        appendMsg(e, "tool", toolName)
                     }
                 }
-                "plan_item" -> {
-                    val m = Message(
-                        id = "plan-${e.seq}-${System.currentTimeMillis()}",
-                        convId = _state.value.currentConvId,
-                        seq = e.seq,
-                        role = "assistant",
-                        type = "plan",
-                        text = e.text,
-                        status = "",
-                        createdAt = System.currentTimeMillis(),
-                    )
-                    _state.value = _state.value.copy(messages = _state.value.messages + m)
-                }
-                "done" -> {
-                    _state.value = _state.value.copy(runningTaskId = "", runningSince = 0L)
-                }
-                "error" -> {
-                    val m = Message(
-                        id = "err-${System.currentTimeMillis()}",
-                        convId = _state.value.currentConvId,
-                        seq = e.seq,
-                        role = "system",
-                        type = "error",
-                        text = e.text.ifBlank { "任务出错" },
-                        status = "error",
-                        createdAt = System.currentTimeMillis(),
-                    )
-                    _state.value = _state.value.copy(messages = _state.value.messages + m)
-                }
-                "queue" -> {
-                    _state.value = _state.value.copy(runningTaskId = e.taskId)
-                }
+                "plan_item" -> appendMsg(e, "plan", e.text)
+                "done" -> _state.value = _state.value.copy(runningTaskId = "", runningSince = 0L)
+                "error" -> appendMsg(e, "error", e.text.ifBlank { "任务出错" })
+                "queue" -> _state.value = _state.value.copy(
+                    runningTaskId = e.taskId,
+                    runningSince = System.currentTimeMillis(),
+                )
             }
         }
+    }
+
+    private fun appendMsg(e: SseEvent, type: String, text: String) {
+        val m = Message(
+            id = "sse-${type}-${e.seq}-${System.currentTimeMillis()}",
+            convId = _state.value.currentConvId,
+            seq = e.seq,
+            role = if (type == "error") "system" else "assistant",
+            type = type,
+            text = text,
+            status = if (type == "error") "error" else "streaming",
+            createdAt = System.currentTimeMillis(),
+        )
+        _state.value = _state.value.copy(messages = _state.value.messages + m)
     }
 
     // ---------------- 审批 ----------------

@@ -48,7 +48,9 @@ private val RECENT_PHRASES = listOf(
 
 @Composable
 fun InputScreen(
+    modelName: String = "",
     onSend: (String) -> Unit,
+    onPickModel: () -> Unit = {},
     onBack: () -> Unit,
 ) {
     val c = TraeTheme.colors
@@ -64,6 +66,30 @@ fun InputScreen(
             onBack = onBack,
             scale = scale,
         )
+
+        // 当前模型，点击可切换
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = d.padScreen)
+                .heightIn(min = (36 * scale).dp)
+                .clip(RoundedCornerShape(d.cardRadius))
+                .background(c.surface)
+                .clickable { onPickModel() }
+                .padding(horizontal = d.gapM),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = modelName.ifBlank { "选择模型" },
+                color = c.primary,
+                style = t.caption,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
+            Text("切换", color = c.textMuted, style = t.caption)
+        }
+        Spacer(Modifier.height(d.gapXs))
 
         Column(
             modifier = Modifier

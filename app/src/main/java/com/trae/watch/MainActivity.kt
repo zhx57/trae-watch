@@ -18,11 +18,13 @@ import com.trae.watch.ui.screen.ApprovalScreen
 import com.trae.watch.ui.screen.ChatScreen
 import com.trae.watch.ui.screen.InputScreen
 import com.trae.watch.ui.screen.ListScreen
+import com.trae.watch.ui.screen.ModelsScreen
 import com.trae.watch.ui.screen.PairScreen
 import com.trae.watch.ui.screen.TaskScreen
 import com.trae.watch.ui.theme.TraeWatchTheme
 import com.trae.watch.vm.MainViewModel
 import com.trae.watch.vm.Screen
+import com.trae.watch.vm.UiState
 
 class MainActivity : ComponentActivity() {
 
@@ -40,7 +42,6 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        // 通知权限（Android 13+）与电池白名单，只在有账号时请求一次
         if (graph.token.hasAccount) askBackgroundPermissions()
     }
 
@@ -64,7 +65,7 @@ class MainActivity : ComponentActivity() {
     }
 
     @Composable
-    private fun Root(vm: MainViewModel, st: com.trae.watch.vm.UiState) {
+    private fun Root(vm: MainViewModel, st: UiState) {
         when (st.screen) {
             Screen.PAIR -> PairScreen(
                 pairing = st.pairing,
@@ -74,10 +75,13 @@ class MainActivity : ComponentActivity() {
             )
             Screen.LIST -> ListScreen(
                 conversations = st.conversations,
+                tab = st.tab,
                 loading = st.loading,
-                sseState = st.sseState.name,
-                onOpen = { vm.openConversation(it.id, it.title) },
+                modelName = st.models.firstOrNull { it.name == st.selectedModel }?.displayName ?: "",
+                onSwitchTab = vm::switchTab,
+                onOpen = vm::openConversation,
                 onRefresh = vm::refresh,
+                onModels = vm::openModels,
             )
             Screen.CHAT -> ChatScreen(
                 title = st.currentTitle,
@@ -88,8 +92,16 @@ class MainActivity : ComponentActivity() {
                 onTask = vm::openTask,
             )
             Screen.INPUT -> InputScreen(
+                modelName = st.models.firstOrNull { it.name == st.selectedModel }?.displayName ?: "",
                 onSend = vm::send,
-                onBack = { vm.backToList(); vm.openConversation(st.currentConvId, st.currentTitle) },
+                onPickModel = vm::openModels,
+                onBack = { vm.backToList(); },
+            )
+            Screen.MODELS -> ModelsScreen(
+                models = st.models,
+                selected = st.selectedModel,
+                onSelect = vm::selectModel,
+                onBack = { vm.returnToListFromModels() },
             )
             Screen.APPROVAL -> ApprovalScreen(
                 approval = st.approval,
@@ -103,7 +115,7 @@ class MainActivity : ComponentActivity() {
                 startedAt = st.runningSince,
                 stepText = st.messages.lastOrNull { it.type == "tool" || it.type == "plan" }?.text ?: "",
                 onCancel = vm::cancelTask,
-                onBack = { vm.backToList(); vm.openConversation(st.currentConvId, st.currentTitle) },
+                onBack = { vm.backToList(); },
             )
         }
     }

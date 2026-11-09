@@ -12,6 +12,8 @@ object Api {
     const val PATH_CLIS = "/api/solo_hub/v1/clis"
     const val PATH_ONBOARDING = "/api/solo_hub/v1/user/onboarding/state"
     const val PATH_MODELS = "/api/remote/v1/models"
+    const val PATH_CONVERSATIONS = "/api/solo_hub/v1/conversations"
+    const val PATH_CHAT_SESSIONS = "/api/remote/v1/chat_sessions"
     const val PATH_MSG_ANCHOR = "/api/solo_hub/v1/conversations/messages/anchor"
     const val PATH_FULL_DETAIL = "/api/solo_hub/v1/conversations/full_detail"
     const val PATH_SEND_TASK = "/api/solo_hub/v1/conversations/tasks/create"

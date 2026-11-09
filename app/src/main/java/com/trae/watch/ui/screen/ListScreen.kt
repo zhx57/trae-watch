@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -23,23 +24,25 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import com.trae.watch.data.db.Conversation
+import com.trae.watch.data.net.ConvItem
+import com.trae.watch.data.net.ConvSource
 import com.trae.watch.ui.component.EmptyHint
 import com.trae.watch.ui.component.ScreenHeader
 import com.trae.watch.ui.component.StatusDot
 import com.trae.watch.ui.component.TraeButton
-import com.trae.watch.ui.component.TraeCard
 import com.trae.watch.ui.component.WatchScreen
 import com.trae.watch.ui.theme.TraeTheme
 
-/** 会话列表：竖向列表，充分利用 502 的高度 */
 @Composable
 fun ListScreen(
-    conversations: List<Conversation>,
+    conversations: List<ConvItem>,
+    tab: Int,
     loading: Boolean,
-    sseState: String,
-    onOpen: (Conversation) -> Unit,
+    modelName: String,
+    onSwitchTab: (Int) -> Unit,
+    onOpen: (ConvItem) -> Unit,
     onRefresh: () -> Unit,
+    onModels: () -> Unit,
 ) {
     val c = TraeTheme.colors
     val d = TraeTheme.dimens
@@ -47,14 +50,26 @@ fun ListScreen(
 
     WatchScreen { scale ->
         ScreenHeader(
-            title = "会话",
-            subtitle = if (sseState == "CONNECTED") "已连接" else "未连接",
+            title = if (tab == 0) "本地会话" else "云端会话",
+            subtitle = if (conversations.isEmpty()) "" else "${conversations.size} 个",
             scale = scale,
         )
 
+        // 本地 / 云端 切换
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = d.padScreen),
+            horizontalArrangement = Arrangement.spacedBy(d.gapS),
+        ) {
+            TabChip("本地", tab == 0, Modifier.weight(1f)) { onSwitchTab(0) }
+            TabChip("云端", tab == 1, Modifier.weight(1f)) { onSwitchTab(1) }
+        }
+        Spacer(Modifier.height(d.gapS))
+
         if (conversations.isEmpty()) {
             Box(Modifier.weight(1f)) {
-                EmptyHint(if (loading) "加载中…" else "暂无会话\n下拉或点下方刷新")
+                EmptyHint(if (loading) "加载中…" else "这一栏还没有会话")
             }
         } else {
             LazyColumn(
@@ -64,8 +79,8 @@ fun ListScreen(
                     .padding(horizontal = d.padScreen),
                 verticalArrangement = Arrangement.spacedBy(d.gapS),
             ) {
-                items(conversations, key = { it.id }) { conv ->
-                    ConversationRow(conv, scale) { onOpen(conv) }
+                items(conversations, key = { "${it.source}-${it.id}" }) { conv ->
+                    ConvRow(conv, scale) { onOpen(conv) }
                 }
                 item { Spacer(Modifier.height(d.gapM)) }
             }
@@ -83,12 +98,19 @@ fun ListScreen(
                 enabled = !loading,
                 onClick = onRefresh,
             )
+            TraeButton(
+                text = modelName.ifBlank { "模型" },
+                modifier = Modifier.weight(1f),
+                color = c.surfaceHigh,
+                contentColor = c.primary,
+                onClick = onModels,
+            )
         }
     }
 }
 
 @Composable
-private fun ConversationRow(conv: Conversation, scale: Float, onClick: () -> Unit) {
+private fun ConvRow(conv: ConvItem, scale: Float, onClick: () -> Unit) {
     val c = TraeTheme.colors
     val d = TraeTheme.dimens
     val t = TraeTheme.type
@@ -96,31 +118,30 @@ private fun ConversationRow(conv: Conversation, scale: Float, onClick: () -> Uni
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .heightIn(min = (72 * scale).dp)
-            .clip(androidx.compose.foundation.shape.RoundedCornerShape(d.cardRadius))
+            .heightIn(min = (68 * scale).dp)
+            .clip(RoundedCornerShape(d.cardRadius))
             .background(c.surface)
             .clickable { onClick() }
-            .padding(horizontal = d.gapM, vertical = d.gapM),
+            .padding(horizontal = d.gapM, vertical = d.gapS),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        // 纯色圆 + 首字母，代替头像图片
         Box(
             modifier = Modifier
-                .size((40 * scale).dp)
+                .size((36 * scale).dp)
                 .clip(CircleShape)
                 .background(c.surfaceHigh),
             contentAlignment = Alignment.Center,
         ) {
             Text(
-                text = conv.title.take(1).uppercase(),
-                color = c.primary,
-                style = t.label,
+                text = if (conv.source == ConvSource.CLOUD) "云" else conv.title.take(1).uppercase(),
+                color = if (conv.source == ConvSource.CLOUD) c.warning else c.primary,
+                style = t.caption,
             )
         }
-        Spacer(Modifier.width(d.gapM))
+        Spacer(Modifier.width(d.gapS))
         Column(Modifier.weight(1f)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                StatusDot(conv.status, size = (7 * scale).dp)
+                StatusDot(conv.taskStatus, size = (6 * scale).dp)
                 Spacer(Modifier.width(d.gapXs))
                 Text(
                     text = conv.title,
@@ -132,28 +153,51 @@ private fun ConversationRow(conv: Conversation, scale: Float, onClick: () -> Uni
             }
             Spacer(Modifier.height(2.dp))
             Text(
-                text = conv.lastSnippet.ifBlank { conv.status },
-                color = c.textSecondary,
+                text = buildSubtitle(conv),
+                color = c.textMuted,
                 style = t.caption,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
         }
-        if (conv.unread > 0) {
-            Spacer(Modifier.width(d.gapS))
+        if (conv.unread) {
+            Spacer(Modifier.width(d.gapXs))
             Box(
-                modifier = Modifier
-                    .size((20 * scale).dp)
-                    .clip(CircleShape)
-                    .background(c.primary),
-                contentAlignment = Alignment.Center,
-            ) {
-                Text(
-                    text = if (conv.unread > 9) "9+" else conv.unread.toString(),
-                    color = c.onPrimary,
-                    style = t.caption,
-                )
-            }
+                modifier = Modifier.size((7 * scale).dp).clip(CircleShape).background(c.primary),
+            )
         }
+    }
+}
+
+private fun buildSubtitle(c: ConvItem): String {
+    val status = when (c.taskStatus) {
+        "in_progress", "running" -> "运行中"
+        "completed" -> "已完成"
+        "interrupted" -> "已中断"
+        "failed" -> "失败"
+        else -> c.taskStatus
+    }
+    return if (c.workspace.isNotBlank()) {
+        "$status · ${c.workspace.substringAfterLast('\\').ifBlank { c.workspace }}"
+    } else status
+}
+
+@Composable
+private fun TabChip(text: String, active: Boolean, modifier: Modifier, onClick: () -> Unit) {
+    val c = TraeTheme.colors
+    val d = TraeTheme.dimens
+    Box(
+        modifier = modifier
+            .heightIn(min = d.touchMin)
+            .clip(RoundedCornerShape(d.buttonRadius))
+            .background(if (active) c.primary.copy(alpha = 0.16f) else c.surface)
+            .clickable { onClick() },
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = text,
+            color = if (active) c.primary else c.textSecondary,
+            style = TraeTheme.type.label,
+        )
     }
 }
