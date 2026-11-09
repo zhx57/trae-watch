@@ -176,6 +176,7 @@ fun ListScreen(
 }
 
 /** 官方 ListItem + combinedClickable：短按进入，长按弹出菜单 */
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 private fun ConvListItem(
     conv: ConvItem,
