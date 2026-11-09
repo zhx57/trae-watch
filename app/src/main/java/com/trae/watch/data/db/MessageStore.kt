@@ -36,7 +36,7 @@ class MessageStore(private val db: Db) {
             while (c.moveToNext()) {
                 out.add(
                     Conversation(
-                        id = c.str(0),
+                        id = c.str(0) ?: "",
                         title = c.str(1) ?: "未命名",
                         status = c.str(2) ?: "",
                         updatedAt = c.long(3),

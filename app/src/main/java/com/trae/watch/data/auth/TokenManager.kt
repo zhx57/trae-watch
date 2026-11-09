@@ -24,7 +24,6 @@ class TokenManager(context: Context) {
     private val app = context.applicationContext
     private val prefs = app.getSharedPreferences(PREF, Context.MODE_PRIVATE)
     private val json = Json { ignoreUnknownKeys = true; isLenient = true }
-    private val refreshMutex = Mutex()
     private val lastRefreshAt = AtomicLong(0)
 
     companion object {

@@ -42,7 +42,7 @@ class PollJobService : JobService() {
     override fun onStartJob(params: JobParameters?): Boolean {
         val graph = (application as? TraeWatchApp)?.graph ?: return false
         if (!graph.token.hasAccount) return false
-        Thread {
+        val worker = Thread({
             try {
                 val clis = graph.api.listClis()
                 Log.i(TAG, "poll ok, clis=${clis.size}")
@@ -51,7 +51,9 @@ class PollJobService : JobService() {
             } finally {
                 jobFinished(params, false)
             }
-        }, "poll-job").start()
+        }, "poll-job")
+        worker.isDaemon = true
+        worker.start()
         return true
     }
 

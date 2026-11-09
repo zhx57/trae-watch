@@ -82,10 +82,28 @@ class ApiClient(private val tokenProvider: () -> String) {
 
     /** 发消息 */
     fun sendMessage(convId: String, text: String): Result {
-        val quoted = json.encodeToString(kotlinx.serialization.builtins.serializer(String), text)
+        val quoted = quote(text)
         val payload = """{"content":[{"type":"text","text":$quoted}],""" +
             """"query":$quoted,"model_name":"","agent_type":"solo_coder","model_selection_strategy":"auto"}"""
         return post(Api.HOST_AI, Api.sendPath(convId), payload)
+    }
+
+    /** 最小 JSON 字符串转义，避免为一次拼接引入 serializer */
+    private fun quote(s: String): String {
+        val sb = StringBuilder(s.length + 16)
+        sb.append('"')
+        for (ch in s) {
+            when (ch) {
+                '"' -> sb.append("\\\"")
+                '\\' -> sb.append("\\\\")
+                '\n' -> sb.append("\\n")
+                '\r' -> sb.append("\\r")
+                '\t' -> sb.append("\\t")
+                else -> if (ch < ' ') sb.append("\\u%04x".format(ch.code)) else sb.append(ch)
+            }
+        }
+        sb.append('"')
+        return sb.toString()
     }
 
     /** 审批决策 */
