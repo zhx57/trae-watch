@@ -2,32 +2,74 @@ package com.trae.watch.data.db
 
 import android.content.ContentValues
 import android.database.Cursor
+import android.util.Log
 
-/** 会话与消息的读写。全部操作在 IO 线程调用。 */
+/**
+ * 会话与消息的读写。全部操作在 IO 线程调用。
+ *
+ * 关键约束：本地库是缓存，不是事实来源。
+ * 任何 SQLite 异常（典型是 Android 8.1 手表上的
+ * SQLiteCantOpenDatabaseException code 14「Could not open database」）
+ * 都必须被吞掉并降级，否则点开对话会直接崩。
+ *
+ * 降级策略：
+ *  1. 第一次失败 -> 删库重建，重试一次
+ *  2. 仍失败 -> 标记 broken，此后所有读写直接返回空，不再访问磁盘
+ *  3. 写失败不影响内存里的消息列表，UI 仍可正常显示远端拉取的内容
+ */
 class MessageStore(private val db: Db) {
 
-    fun upsertConversations(list: List<Conversation>) {
-        val w = db.writableDatabase
-        w.beginTransaction()
-        try {
-            for (c in list) {
-                val v = ContentValues().apply {
-                    put("id", c.id)
-                    put("title", c.title)
-                    put("status", c.status)
-                    put("updated_at", c.updatedAt)
-                    put("unread", c.unread)
-                    put("last_snippet", c.lastSnippet)
+    companion object {
+        private const val TAG = "TraeStore"
+    }
+
+    /** 统一的执行包装：失败自愈一次，再失败就降级 */
+    private fun <T> guarded(block: () -> T, fallback: T): T {
+        if (db.isBroken) return fallback
+        return try {
+            block()
+        } catch (e: Throwable) {
+            Log.w(TAG, "db access failed: ${e.javaClass.simpleName} ${e.message}")
+            val recovered = db.recover()
+            if (recovered) {
+                try {
+                    return block()
+                } catch (e2: Throwable) {
+                    Log.w(TAG, "retry after recover failed: ${e2.message}")
                 }
-                w.insertWithOnConflict(Db.T_CONV, null, v, android.database.sqlite.SQLiteDatabase.CONFLICT_REPLACE)
             }
-            w.setTransactionSuccessful()
-        } finally {
-            w.endTransaction()
+            db.markBroken(e)
+            fallback
         }
     }
 
-    fun conversations(limit: Int = 30): List<Conversation> {
+    fun upsertConversations(list: List<Conversation>) {
+        if (list.isEmpty()) return
+        guarded(Unit) {
+            val w = db.writableDatabase
+            w.beginTransaction()
+            try {
+                for (c in list) {
+                    val v = ContentValues().apply {
+                        put("id", c.id)
+                        put("title", c.title)
+                        put("status", c.status)
+                        put("updated_at", c.updatedAt)
+                        put("unread", c.unread)
+                        put("last_snippet", c.lastSnippet)
+                    }
+                    w.insertWithOnConflict(
+                        Db.T_CONV, null, v, android.database.sqlite.SQLiteDatabase.CONFLICT_REPLACE
+                    )
+                }
+                w.setTransactionSuccessful()
+            } finally {
+                runCatching { w.endTransaction() }
+            }
+        }
+    }
+
+    fun conversations(limit: Int = 30): List<Conversation> = guarded(emptyList()) {
         val out = ArrayList<Conversation>(limit)
         db.readableDatabase.rawQuery(
             "SELECT id,title,status,updated_at,unread,last_snippet FROM ${Db.T_CONV} ORDER BY updated_at DESC LIMIT ?",
@@ -46,16 +88,17 @@ class MessageStore(private val db: Db) {
                 )
             }
         }
-        return out
+        out
     }
 
-    fun conversation(id: String): Conversation? {
+    fun conversation(id: String): Conversation? = guarded(null) {
+        var result: Conversation? = null
         db.readableDatabase.rawQuery(
             "SELECT id,title,status,updated_at,unread,last_snippet FROM ${Db.T_CONV} WHERE id=?",
             arrayOf(id),
         ).use { c ->
             if (c.moveToFirst()) {
-                return Conversation(
+                result = Conversation(
                     id = c.str(0) ?: id,
                     title = c.str(1) ?: "未命名",
                     status = c.str(2) ?: "",
@@ -65,35 +108,39 @@ class MessageStore(private val db: Db) {
                 )
             }
         }
-        return null
+        result
     }
 
     fun upsertMessages(list: List<Message>) {
         if (list.isEmpty()) return
-        val w = db.writableDatabase
-        w.beginTransaction()
-        try {
-            for (m in list) {
-                val v = ContentValues().apply {
-                    put("id", m.id)
-                    put("conv_id", m.convId)
-                    put("seq", m.seq)
-                    put("role", m.role)
-                    put("type", m.type)
-                    put("text", m.text)
-                    put("status", m.status)
-                    put("created_at", m.createdAt)
+        guarded(Unit) {
+            val w = db.writableDatabase
+            w.beginTransaction()
+            try {
+                for (m in list) {
+                    val v = ContentValues().apply {
+                        put("id", m.id)
+                        put("conv_id", m.convId)
+                        put("seq", m.seq)
+                        put("role", m.role)
+                        put("type", m.type)
+                        put("text", m.text)
+                        put("status", m.status)
+                        put("created_at", m.createdAt)
+                    }
+                    w.insertWithOnConflict(
+                        Db.T_MSG, null, v, android.database.sqlite.SQLiteDatabase.CONFLICT_REPLACE
+                    )
                 }
-                w.insertWithOnConflict(Db.T_MSG, null, v, android.database.sqlite.SQLiteDatabase.CONFLICT_REPLACE)
+                w.setTransactionSuccessful()
+            } finally {
+                runCatching { w.endTransaction() }
             }
-            w.setTransactionSuccessful()
-        } finally {
-            w.endTransaction()
         }
     }
 
     /** 只取最近 N 条，避免低端机一次性加载全量 */
-    fun messages(convId: String, limit: Int = 40): List<Message> {
+    fun messages(convId: String, limit: Int = 40): List<Message> = guarded(emptyList()) {
         val out = ArrayList<Message>(limit)
         db.readableDatabase.rawQuery(
             "SELECT id,conv_id,seq,role,type,text,status,created_at FROM ${Db.T_MSG} " +
@@ -116,23 +163,27 @@ class MessageStore(private val db: Db) {
             }
         }
         out.reverse()
-        return out
+        out
     }
 
     fun markRead(convId: String) {
-        val v = ContentValues().apply { put("unread", 0) }
-        db.writableDatabase.update(Db.T_CONV, v, "id=?", arrayOf(convId))
+        guarded(Unit) {
+            val v = ContentValues().apply { put("unread", 0) }
+            db.writableDatabase.update(Db.T_CONV, v, "id=?", arrayOf(convId))
+        }
     }
 
     fun deleteConversation(convId: String) {
-        val w = db.writableDatabase
-        w.beginTransaction()
-        try {
-            w.delete(Db.T_MSG, "conv_id=?", arrayOf(convId))
-            w.delete(Db.T_CONV, "id=?", arrayOf(convId))
-            w.setTransactionSuccessful()
-        } finally {
-            w.endTransaction()
+        guarded(Unit) {
+            val w = db.writableDatabase
+            w.beginTransaction()
+            try {
+                w.delete(Db.T_MSG, "conv_id=?", arrayOf(convId))
+                w.delete(Db.T_CONV, "id=?", arrayOf(convId))
+                w.setTransactionSuccessful()
+            } finally {
+                runCatching { w.endTransaction() }
+            }
         }
     }
 

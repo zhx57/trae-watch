@@ -187,38 +187,50 @@ class MainViewModel(private val graph: AppGraph) : ViewModel() {
             error = "",
         )
         viewModelScope.launch(Dispatchers.IO) {
-            // 补齐 cli_id / project_id / workspace（tasks/create 必填）
-            var conv = c
-            if (c.cliId.isBlank() || c.projectId.isBlank()) {
-                val detail = runCatching { graph.api.conversationDetail(c.id) }.getOrNull()
-                if (detail != null) {
-                    conv = detail.copy(title = c.title, source = c.source)
-                    withContext(Dispatchers.Main) {
-                        _state.value = _state.value.copy(currentConv = conv)
+            try {
+                // 补齐 cli_id / project_id / workspace（tasks/create 必填）
+                var conv = c
+                if (c.cliId.isBlank() || c.projectId.isBlank()) {
+                    val detail = runCatching { graph.api.conversationDetail(c.id) }.getOrNull()
+                    if (detail != null) {
+                        conv = detail.copy(title = c.title, source = c.source)
+                        withContext(Dispatchers.Main) {
+                            _state.value = _state.value.copy(currentConv = conv)
+                        }
                     }
                 }
-            }
-            val local = graph.store.messages(c.id)
-            withContext(Dispatchers.Main) {
-                _state.value = _state.value.copy(messages = local)
-            }
-            // 拉远端历史（用 conversation_id + before_limit，实测正确参数）
-            val raw = runCatching { graph.api.fetchMessagesRaw(c.id) }.getOrNull()
-            if (raw != null) {
-                val parsed = MessageParser.parse(c.id, raw)
-                if (parsed.isNotEmpty()) {
-                    graph.store.upsertMessages(parsed)
-                    val all = graph.store.messages(c.id)
+                // 本地缓存只是加速；库不可用时返回空列表，不阻断后续远端拉取
+                val local = graph.store.messages(c.id)
+                if (local.isNotEmpty()) {
                     withContext(Dispatchers.Main) {
-                        _state.value = _state.value.copy(messages = all, error = "")
+                        _state.value = _state.value.copy(messages = local)
                     }
-                    return@launch
                 }
-            }
-            withContext(Dispatchers.Main) {
-                if (graph.store.messages(c.id).isEmpty()) {
+                // 拉远端历史（用 conversation_id + before_limit，实测正确参数）
+                val raw = runCatching { graph.api.fetchMessagesRaw(c.id) }.getOrNull()
+                if (raw != null) {
+                    val parsed = MessageParser.parse(c.id, raw)
+                    if (parsed.isNotEmpty()) {
+                        graph.store.upsertMessages(parsed)
+                        // 写入失败时直接展示解析结果，不依赖回读
+                        val all = graph.store.messages(c.id).ifEmpty { parsed }
+                        withContext(Dispatchers.Main) {
+                            _state.value = _state.value.copy(messages = all, error = "")
+                        }
+                        return@launch
+                    }
+                }
+                withContext(Dispatchers.Main) {
+                    if (_state.value.messages.isEmpty()) {
+                        _state.value = _state.value.copy(
+                            error = if (raw == null) "历史消息请求失败" else "该会话暂无消息",
+                        )
+                    }
+                }
+            } catch (e: Throwable) {
+                withContext(Dispatchers.Main) {
                     _state.value = _state.value.copy(
-                        error = if (raw == null) "历史消息请求失败" else "该会话暂无消息",
+                        error = "打开会话失败：${e.javaClass.simpleName}",
                     )
                 }
             }
@@ -360,36 +372,48 @@ class MainViewModel(private val graph: AppGraph) : ViewModel() {
         )
         val model = _state.value.selectedModel
         viewModelScope.launch(Dispatchers.IO) {
-            graph.store.upsertMessages(listOf(localMsg))
-            // 补齐 cli_id / project_id / workspace —— tasks/create 的必填字段
-            var target = conv
-            if (target == null || target.cliId.isBlank() || target.projectId.isBlank()) {
-                target = graph.api.conversationDetail(convId) ?: target
-            }
-            if (target == null) {
+            try {
+                graph.store.upsertMessages(listOf(localMsg))
+                // 补齐 cli_id / project_id / workspace —— tasks/create 的必填字段
+                var target = conv
+                if (target == null || target.cliId.isBlank() || target.projectId.isBlank()) {
+                    target = runCatching { graph.api.conversationDetail(convId) }.getOrNull() ?: target
+                }
+                if (target == null) {
+                    markSendFailed(localMsg.id, "会话不存在")
+                    return@launch
+                }
+                if (target.cliId.isBlank()) {
+                    markSendFailed(localMsg.id, "缺少 cli_id，无法发送")
+                    return@launch
+                }
+                val r = graph.api.createTask(target, text, model)
                 withContext(Dispatchers.Main) {
-                    _state.value = _state.value.copy(error = "会话不存在")
+                    markSentInternal(localMsg.id, r.bizOk)
+                    _state.value = _state.value.copy(
+                        error = if (r.bizOk) "" else "发送失败: ${r.bizMessage.ifBlank { "HTTP ${r.code}" }}",
+                    )
                 }
-                return@launch
+                if (r.bizOk) startSse(convId)
+            } catch (e: Throwable) {
+                markSendFailed(localMsg.id, "发送异常：${e.javaClass.simpleName}")
             }
-            if (target.cliId.isBlank()) {
-                withContext(Dispatchers.Main) {
-                    _state.value = _state.value.copy(error = "缺少 cli_id，无法发送")
-                }
-                return@launch
-            }
-            val r = graph.api.createTask(target, text, model)
-            withContext(Dispatchers.Main) {
-                val updated = _state.value.messages.map {
-                    if (it.id == localMsg.id) it.copy(status = if (r.bizOk) "sent" else "failed") else it
-                }
-                _state.value = _state.value.copy(
-                    messages = updated,
-                    error = if (r.bizOk) "" else "发送失败: ${r.bizMessage.ifBlank { "HTTP ${r.code}" }}",
-                )
-            }
-            if (r.bizOk) startSse(convId)
         }
+    }
+
+    private suspend fun markSendFailed(msgId: String, reason: String) {
+        withContext(Dispatchers.Main) {
+            markSentInternal(msgId, false)
+            _state.value = _state.value.copy(error = reason)
+        }
+    }
+
+    private fun markSentInternal(msgId: String, ok: Boolean) {
+        _state.value = _state.value.copy(
+            messages = _state.value.messages.map {
+                if (it.id == msgId) it.copy(status = if (ok) "sent" else "failed") else it
+            },
+        )
     }
 
     // ---------------- 实时更新（轮询） ----------------
