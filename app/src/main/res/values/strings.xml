@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Trae</string>
+    <string name="notif_channel_name">任务状态</string>
+    <string name="notif_channel_desc">Agent 任务进度与审批提醒</string>
+</resources>
