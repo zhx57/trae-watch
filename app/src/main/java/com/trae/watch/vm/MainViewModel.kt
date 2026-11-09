@@ -36,6 +36,7 @@ data class UiState(
     val currentConvId: String = "",
     val currentTitle: String = "",
     val currentSource: ConvSource = ConvSource.LOCAL,
+    val currentConv: ConvItem? = null,
     val approval: Approval? = null,
     val sseState: SseState = SseState.DISCONNECTED,
     val runningTaskId: String = "",
@@ -181,22 +182,39 @@ class MainViewModel(private val graph: AppGraph) : ViewModel() {
             currentConvId = c.id,
             currentTitle = c.title,
             currentSource = c.source,
+            currentConv = c,
             messages = emptyList(),
+            error = "",
         )
         viewModelScope.launch(Dispatchers.IO) {
+            // 补齐 cli_id / project_id / workspace（发消息必需）
+            var conv = c
+            if (c.source == ConvSource.LOCAL && (c.cliId.isBlank() || c.projectId.isBlank())) {
+                graph.api.conversationDetail(c.id)?.let { conv = it.copy(title = c.title) }
+                withContext(Dispatchers.Main) {
+                    _state.value = _state.value.copy(currentConv = conv)
+                }
+            }
             val local = graph.store.messages(c.id)
             withContext(Dispatchers.Main) {
                 _state.value = _state.value.copy(messages = local)
             }
-            runCatching {
-                val body = graph.api.fetchMessages(c.id) ?: return@runCatching
-                val parsed = MessageParser.parse(c.id, body)
+            // 拉远端历史
+            val raw = runCatching { graph.api.fetchMessagesRaw(c.id) }.getOrNull()
+            if (raw != null) {
+                val parsed = MessageParser.parse(c.id, raw)
                 if (parsed.isNotEmpty()) {
                     graph.store.upsertMessages(parsed)
                     val all = graph.store.messages(c.id)
                     withContext(Dispatchers.Main) {
-                        _state.value = _state.value.copy(messages = all)
+                        _state.value = _state.value.copy(messages = all, error = "")
                     }
+                    return@launch
+                }
+            }
+            withContext(Dispatchers.Main) {
+                if (graph.store.messages(c.id).isEmpty()) {
+                    _state.value = _state.value.copy(error = "历史消息加载失败")
                 }
             }
         }
@@ -227,8 +245,10 @@ class MainViewModel(private val graph: AppGraph) : ViewModel() {
     // ---------------- 发送 ----------------
 
     fun send(text: String) {
-        val convId = _state.value.currentConvId
-        if (convId.isEmpty() || text.isBlank()) return
+        val conv = _state.value.currentConv
+        if (conv == null && _state.value.currentConvId.isEmpty()) return
+        if (text.isBlank()) return
+        val convId = conv?.id ?: _state.value.currentConvId
         val localMsg = Message(
             id = "local-${System.currentTimeMillis()}",
             convId = convId,
@@ -242,96 +262,90 @@ class MainViewModel(private val graph: AppGraph) : ViewModel() {
         _state.value = _state.value.copy(
             screen = Screen.CHAT,
             messages = _state.value.messages + localMsg,
+            error = "",
         )
         val model = _state.value.selectedModel
         viewModelScope.launch(Dispatchers.IO) {
             graph.store.upsertMessages(listOf(localMsg))
-            val r = graph.api.sendMessage(convId, text, model)
+            // 云端会话先走 remote 详情补齐，本地会话直接 createTask
+            val target = conv ?: graph.api.conversationDetail(convId)
+            if (target == null) {
+                withContext(Dispatchers.Main) {
+                    _state.value = _state.value.copy(error = "会话信息缺失，无法发送")
+                }
+                return@launch
+            }
+            val r = graph.api.createTask(target, text, model)
             withContext(Dispatchers.Main) {
                 val updated = _state.value.messages.map {
-                    if (it.id == localMsg.id) it.copy(status = if (r.ok) "sent" else "failed") else it
+                    if (it.id == localMsg.id) it.copy(status = if (r.bizOk) "sent" else "failed") else it
                 }
                 _state.value = _state.value.copy(
                     messages = updated,
-                    error = if (r.ok) "" else "发送失败 (${r.code})",
+                    error = if (r.bizOk) "" else "发送失败: ${r.bizMessage.ifBlank { "HTTP ${r.code}" }}",
                 )
             }
-            if (r.ok) startSse(convId)
+            if (r.bizOk) startSse(convId)
         }
     }
 
-    // ---------------- SSE ----------------
+    // ---------------- 实时更新（轮询） ----------------
 
+    private var pollJob: kotlinx.coroutines.Job? = null
+
+    /**
+     * 发完消息后启动轮询刷新历史。
+     *
+     * SSE 事件端点参数尚未确认（实测 400），暂用 3 秒轮询拉取 anchor，
+     * 拿到新消息就增量入库。功能正确性优先，后续确认 SSE 参数再切换。
+     */
     fun startSse(convId: String) {
         if (convId.isEmpty()) return
         stopSse()
-        val reader = SseReader(
-            tokenProvider = { graph.token.accessToken() },
-            onEvent = { e -> handleEvent(e) },
-            onState = { s ->
-                viewModelScope.launch(Dispatchers.Main) {
-                    _state.value = _state.value.copy(sseState = s)
+        _state.value = _state.value.copy(sseState = SseState.CONNECTED)
+        pollJob = viewModelScope.launch(Dispatchers.IO) {
+            var idle = 0
+            while (true) {
+                kotlinx.coroutines.delay(3000)
+                val raw = runCatching { graph.api.fetchMessagesRaw(convId) }.getOrNull()
+                if (raw == null) {
+                    withContext(Dispatchers.Main) {
+                        _state.value = _state.value.copy(sseState = SseState.DISCONNECTED)
+                    }
+                    idle++
+                    if (idle > 5) break
+                    continue
                 }
-            },
-        )
-        sse = reader
-        reader.start(convId)
+                val parsed = MessageParser.parse(convId, raw)
+                val before = _state.value.messages.size
+                if (parsed.isNotEmpty()) {
+                    graph.store.upsertMessages(parsed)
+                    val all = graph.store.messages(convId)
+                    withContext(Dispatchers.Main) {
+                        _state.value = _state.value.copy(messages = all, sseState = SseState.CONNECTED)
+                    }
+                    if (all.size != before) idle = 0 else idle++
+                } else {
+                    idle++
+                }
+                // 连续 20 次（约 1 分钟）无变化就停
+                if (idle > 20) break
+            }
+        }
     }
 
     fun stopSse() {
-        sse?.stop()
-        sse = null
+        pollJob?.cancel()
+        pollJob = null
         _state.value = _state.value.copy(sseState = SseState.DISCONNECTED)
     }
 
     private fun handleEvent(e: SseEvent) {
-        viewModelScope.launch(Dispatchers.Main) {
-            when (e.type) {
-                "msg" -> if (e.text.isNotBlank()) {
-                    appendMsg(e, "text", e.text)
-                }
-                "tool_call", "tool" -> {
-                    val toolName = e.text.ifBlank { "工具调用" }
-                    val needConfirm = e.raw.contains("\"require_confirm\"") ||
-                        e.raw.contains("\"need_approval\"")
-                    if (needConfirm) {
-                        _state.value = _state.value.copy(
-                            approval = Approval(
-                                convId = _state.value.currentConvId,
-                                taskId = e.taskId,
-                                toolName = toolName,
-                                summary = toolName,
-                                fullText = e.raw,
-                            ),
-                            screen = Screen.APPROVAL,
-                        )
-                    } else {
-                        appendMsg(e, "tool", toolName)
-                    }
-                }
-                "plan_item" -> appendMsg(e, "plan", e.text)
-                "done" -> _state.value = _state.value.copy(runningTaskId = "", runningSince = 0L)
-                "error" -> appendMsg(e, "error", e.text.ifBlank { "任务出错" })
-                "queue" -> _state.value = _state.value.copy(
-                    runningTaskId = e.taskId,
-                    runningSince = System.currentTimeMillis(),
-                )
-            }
-        }
+        // 保留：SSE 端点参数确认后启用
     }
 
     private fun appendMsg(e: SseEvent, type: String, text: String) {
-        val m = Message(
-            id = "sse-${type}-${e.seq}-${System.currentTimeMillis()}",
-            convId = _state.value.currentConvId,
-            seq = e.seq,
-            role = if (type == "error") "system" else "assistant",
-            type = type,
-            text = text,
-            status = if (type == "error") "error" else "streaming",
-            createdAt = System.currentTimeMillis(),
-        )
-        _state.value = _state.value.copy(messages = _state.value.messages + m)
+        // 保留：SSE 端点参数确认后启用
     }
 
     // ---------------- 审批 ----------------

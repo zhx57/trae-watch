@@ -34,6 +34,7 @@ fun ChatScreen(
     title: String,
     messages: List<Message>,
     running: Boolean,
+    error: String = "",
     onBack: () -> Unit,
     onInput: () -> Unit,
     onTask: () -> Unit,
@@ -46,7 +47,11 @@ fun ChatScreen(
     WatchScreen { scale ->
         ScreenHeader(
             title = title,
-            subtitle = if (running) "运行中" else "空闲",
+            subtitle = when {
+                error.isNotBlank() -> error
+                running -> "运行中"
+                else -> "空闲"
+            },
             onBack = onBack,
             scale = scale,
         )

@@ -8,10 +8,23 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
 /**
- * 把 conversations/messages/anchor 的响应转成手表端消息列表。
+ * 解析 anchor 接口返回的消息。
  *
- * 只保留 role / type / text 三类有效信息，其余字段（token 用量、文件 diff、
- * 工具原始参数）在手表上无法展示，直接丢弃以省内存。
+ * 实测结构：
+ * {
+ *   "data": { "messages": [ {
+ *       "chat_session_id": "...",
+ *       "message_id": "...",
+ *       "message_type": "general",
+ *       "role": "user",
+ *       "message_index": 39,
+ *       "content": "[{\"type\":\"text\",\"text_content\":\"...\"}]"   <-- 注意是 JSON 字符串
+ *   } ] }
+ * }
+ *
+ * 关键差异（与早期反编译推断不同）：
+ *  - content 是 **字符串**，里面才是 JSON 数组
+ *  - 文本字段名是 text_content，不是 text
  */
 object MessageParser {
     private val json = Json { ignoreUnknownKeys = true; isLenient = true }
@@ -28,55 +41,77 @@ object MessageParser {
     }
 
     private fun toMessage(convId: String, o: JsonObject): Message? {
-        val id = o["message_id"]?.jsonPrimitive?.content
-            ?: o["id"]?.jsonPrimitive?.content
-            ?: return null
-        val role = o["role"]?.jsonPrimitive?.content ?: "assistant"
-        val rawType = o["message_type"]?.jsonPrimitive?.content ?: "text"
-        val type = mapType(rawType)
+        val id = o["message_id"]?.s() ?: o["id"]?.s() ?: return null
+        val role = o["role"]?.s() ?: "assistant"
+        val rawType = o["message_type"]?.s() ?: "general"
         val text = extractText(o)
-        if (type == "thought") return null // 思考过程在手表上不展示
-        if (text.isBlank() && type == "text") return null
+        if (text.isBlank()) return null
         return Message(
             id = id,
-            convId = o["chat_session_id"]?.jsonPrimitive?.content ?: convId,
-            seq = o["message_index"]?.jsonPrimitive?.content?.toIntOrNull() ?: 0,
+            convId = o["chat_session_id"]?.s() ?: convId,
+            seq = o["message_index"]?.s()?.toIntOrNull() ?: 0,
             role = role,
-            type = type,
+            type = mapType(rawType, text),
             text = text,
-            status = o["status"]?.jsonPrimitive?.content ?: "",
-            createdAt = o["created_at_ms"]?.jsonPrimitive?.content?.toLongOrNull() ?: 0L,
+            status = o["status"]?.s() ?: "",
+            createdAt = o["created_at_ms"]?.s()?.toLongOrNull()
+                ?: o["created_at"]?.s()?.toLongOrNull() ?: 0L,
         )
     }
 
-    private fun mapType(raw: String): String = when {
-        raw.contains("thought") -> "thought"
+    private fun mapType(raw: String, text: String): String = when {
         raw.contains("tool") -> "tool"
         raw.contains("plan") -> "plan"
         raw.contains("error") -> "error"
+        raw.contains("thought") -> "thought"
+        // 工具调用在 general 消息里以特殊 JSON 片段出现
+        text.contains("\"tool_name\"") -> "tool"
         else -> "text"
     }
 
-    /** 从 content 里抽文本，content 可能是字符串或 parts 数组 */
+    /**
+     * content 两种形态都要兼容：
+     *  1. JSON 字符串，如 "[{\"type\":\"text\",\"text_content\":\"hi\"}]"
+     *  2. 真正的数组
+     * 文本字段优先 text_content，兼容 text。
+     */
     private fun extractText(o: JsonObject): String {
-        // 优先 query（用户消息）
-        o["query"]?.jsonPrimitive?.content?.let { if (it.isNotBlank()) return it }
+        o["query"]?.s()?.let { if (it.isNotBlank()) return it }
 
         val content = o["content"] ?: return ""
-        // 字符串形式
-        runCatching { content.jsonPrimitive.content }.getOrNull()?.let { return it }
-        // 数组形式：拼接 text 字段
+        val raw = runCatching { content.jsonPrimitive.content }.getOrNull()
+        if (raw != null) {
+            if (!raw.trimStart().startsWith("[")) return raw
+            return parseParts(raw)
+        }
         val arr = content as? JsonArray ?: return ""
+        return joinParts(arr)
+    }
+
+    private fun parseParts(raw: String): String = try {
+        val arr = json.parseToJsonElement(raw) as? JsonArray ?: return raw
+        joinParts(arr)
+    } catch (e: Exception) {
+        raw
+    }
+
+    private fun joinParts(arr: JsonArray): String {
         val sb = StringBuilder()
         for (p in arr) {
             val po = p as? JsonObject ?: continue
-            val t = po["text"]?.jsonPrimitive?.content
+            val t = po["text_content"]?.s() ?: po["text"]?.s()
             if (!t.isNullOrBlank()) {
                 if (sb.isNotEmpty()) sb.append('\n')
                 sb.append(t)
             }
-            if (sb.length > 800) break // 手表端截断，避免单条消息撑爆内存
+            if (sb.length > 900) break
         }
-        return sb.toString()
+        return sb.toString().trim()
+    }
+
+    private fun kotlinx.serialization.json.JsonElement?.s(): String? = try {
+        this?.jsonPrimitive?.content
+    } catch (_: Exception) {
+        null
     }
 }

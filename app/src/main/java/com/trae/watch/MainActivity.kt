@@ -87,6 +87,7 @@ class MainActivity : ComponentActivity() {
                 title = st.currentTitle,
                 messages = st.messages,
                 running = st.runningTaskId.isNotEmpty(),
+                error = st.error,
                 onBack = vm::backToList,
                 onInput = vm::openInput,
                 onTask = vm::openTask,
