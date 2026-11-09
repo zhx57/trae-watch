@@ -1,8 +1,6 @@
 package com.trae.watch.ui.screen
 
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -10,14 +8,22 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.weight
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Button
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.ListItem
+import androidx.compose.material3.ListItemDefaults
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -27,18 +33,18 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.trae.watch.data.net.ConvItem
 import com.trae.watch.data.net.ConvSource
-import com.trae.watch.ui.component.EmptyHint
-import com.trae.watch.ui.component.M3eButtonGroup
-import com.trae.watch.ui.component.M3eCard
-import com.trae.watch.ui.component.M3eGroupSegment
-import com.trae.watch.ui.component.PressableBox
-import com.trae.watch.ui.component.ScreenHeader
-import com.trae.watch.ui.component.StatusDot
-import com.trae.watch.ui.component.TonalBadge
-import com.trae.watch.ui.component.WatchScreen
-import com.trae.watch.ui.theme.M3e
-import com.trae.watch.ui.theme.Squircle
+import com.trae.watch.ui.component.WatchScaffold
 
+/**
+ * 会话列表。
+ * 严格使用官方组件：
+ *  - SingleChoiceSegmentedButtonRow + SegmentedButton（本地/云端切换）
+ *      https://developer.android.com/develop/ui/compose/components/segmented-button
+ *  - LazyColumn + ListItem（列表项）
+ *      https://developer.android.com/develop/ui/compose/lists
+ *  - Button / FilledTonalButton（底部操作）
+ *      https://developer.android.com/develop/ui/compose/components/button
+ */
 @Composable
 fun ListScreen(
     conversations: List<ConvItem>,
@@ -50,137 +56,159 @@ fun ListScreen(
     onRefresh: () -> Unit,
     onModels: () -> Unit,
 ) {
-    val c = M3e.color
-    val d = M3e.dimen
-    val t = M3e.type
+    val options = listOf("本地", "云端")
 
-    WatchScreen { scale ->
-        ScreenHeader(
-            title = if (tab == 0) "本地会话" else "云端会话",
-            subtitle = if (conversations.isEmpty()) "无会话" else "${conversations.size} 个会话",
-            scale = scale,
-        )
-
-        // M3E 相连按钮组：本地 / 云端
-        M3eButtonGroup(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = d.pad)
-                .heightIn(min = (44 * scale).dp),
-        ) {
-            M3eGroupSegment("本地", tab == 0, first = true, last = false) { onSwitchTab(0) }
-            M3eGroupSegment("云端", tab == 1, first = false, last = true) { onSwitchTab(1) }
-        }
-        Spacer(Modifier.height(d.s))
-
-        if (conversations.isEmpty()) {
-            Box(Modifier.weight(1f)) {
-                EmptyHint(if (loading) "加载中…" else "这一栏还没有会话")
-            }
-        } else {
-            LazyColumn(
-                modifier = Modifier.weight(1f).fillMaxWidth(),
-                contentPadding = PaddingValues(horizontal = d.pad, vertical = d.xs),
-                verticalArrangement = Arrangement.spacedBy(d.s),
-            ) {
-                items(conversations, key = { "${it.source}-${it.id}" }) { conv ->
-                    ConvCard(conv, scale) { onOpen(conv) }
+    WatchScaffold(
+        title = "TRAE",
+        subtitle = if (conversations.isEmpty()) "暂无会话" else "${conversations.size} 个会话",
+        bottomBar = {
+            Surface(tonalElevation = 2.dp) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    FilledTonalButton(
+                        onClick = onRefresh,
+                        enabled = !loading,
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Text(if (loading) "刷新中" else "刷新")
+                    }
+                    Button(
+                        onClick = onModels,
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Text(
+                            text = modelName.ifBlank { "模型" },
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
                 }
-                item { Spacer(Modifier.height(d.s)) }
             }
-        }
-
-        // 底部操作：刷新 + 模型，也是相连组
-        M3eButtonGroup(
+        },
+    ) { innerPadding ->
+        Column(
             modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = d.pad, vertical = d.m)
-                .heightIn(min = (48 * scale).dp),
+                .padding(innerPadding)
+                .fillMaxSize(),
         ) {
-            M3eGroupSegment(
-                if (loading) "刷新中" else "刷新",
-                selected = false, first = true, last = false,
-            ) { if (!loading) onRefresh() }
-            M3eGroupSegment(
-                modelName.ifBlank { "模型" },
-                selected = true, first = false, last = true,
-            ) { onModels() }
-        }
-    }
-}
-
-@Composable
-private fun ConvCard(conv: ConvItem, scale: Float, onClick: () -> Unit) {
-    val c = M3e.color
-    val d = M3e.dimen
-    val t = M3e.type
-
-    PressableBox(
-        modifier = Modifier
-            .fillMaxWidth()
-            .heightIn(min = (70 * scale).dp),
-        onClick = onClick,
-        shape = Squircle,
-        bg = c.surfaceContainer,
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(horizontal = d.m, vertical = d.s),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            // 音调头像块：本地用 primaryContainer，云端用 tertiaryContainer
-            Box(
+            // 官方分段按钮：单选
+            SingleChoiceSegmentedButtonRow(
                 modifier = Modifier
-                    .size((38 * scale).dp)
-                    .clip(RoundedCornerShape((14 * scale).dp))
-                    .background(
-                        if (conv.source == ConvSource.CLOUD) c.tertiaryContainer
-                        else c.primaryContainer
-                    ),
-                contentAlignment = Alignment.Center,
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
             ) {
-                Text(
-                    text = if (conv.source == ConvSource.CLOUD) "云"
-                    else conv.title.take(1).uppercase(),
-                    color = if (conv.source == ConvSource.CLOUD) c.onTertiaryContainer
-                    else c.onPrimaryContainer,
-                    style = t.label,
-                )
-            }
-            Spacer(Modifier.width(d.s))
-            Column(Modifier.weight(1f)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    StatusDot(conv.taskStatus, (7 * scale).dp)
-                    Spacer(Modifier.width(d.xs))
-                    Text(
-                        text = conv.title,
-                        color = c.onSurface,
-                        style = t.label,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f, fill = false),
+                options.forEachIndexed { index, label ->
+                    SegmentedButton(
+                        shape = SegmentedButtonDefaults.itemShape(
+                            index = index,
+                            count = options.size,
+                        ),
+                        onClick = { onSwitchTab(index) },
+                        selected = index == tab,
+                        label = { Text(label) },
                     )
                 }
-                Spacer(Modifier.height(2.dp))
-                Text(
-                    text = buildSubtitle(conv),
-                    color = c.onSurfaceVariant,
-                    style = t.labelSmall,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
             }
-            if (conv.unread) {
-                Spacer(Modifier.width(d.xs))
-                TonalBadge("新")
+
+            HorizontalDivider()
+
+            if (conversations.isEmpty()) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(24.dp),
+                    verticalArrangement = Arrangement.Center,
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    Text(
+                        text = if (loading) "加载中…" else "暂无会话",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            } else {
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(vertical = 4.dp),
+                ) {
+                    items(conversations, key = { "${it.source}-${it.id}" }) { conv ->
+                        ConvListItem(conv) { onOpen(conv) }
+                        HorizontalDivider(
+                            modifier = Modifier.padding(start = 72.dp),
+                            color = MaterialTheme.colorScheme.outlineVariant,
+                        )
+                    }
+                }
             }
         }
     }
 }
 
-private fun buildSubtitle(c: ConvItem): String {
-    val status = when (c.taskStatus) {
+/** 官方 ListItem：leadingContent / headlineContent / supportingContent / trailingContent */
+@Composable
+private fun ConvListItem(conv: ConvItem, onClick: () -> Unit) {
+    val cs = MaterialTheme.colorScheme
+    ListItem(
+        modifier = Modifier.fillMaxWidth(),
+        colors = ListItemDefaults.colors(containerColor = cs.surface),
+        leadingContent = {
+            Surface(
+                modifier = Modifier
+                    .size(40.dp)
+                    .clip(CircleShape),
+                color = if (conv.source == ConvSource.CLOUD) cs.tertiaryContainer
+                else cs.primaryContainer,
+            ) {
+                Column(
+                    modifier = Modifier.fillMaxSize(),
+                    verticalArrangement = Arrangement.Center,
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    Text(
+                        text = if (conv.source == ConvSource.CLOUD) "云"
+                        else conv.title.take(1).uppercase(),
+                        style = MaterialTheme.typography.titleSmall,
+                        color = if (conv.source == ConvSource.CLOUD) cs.onTertiaryContainer
+                        else cs.onPrimaryContainer,
+                    )
+                }
+            }
+        },
+        headlineContent = {
+            Text(
+                text = conv.title,
+                style = MaterialTheme.typography.bodyLarge,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        },
+        supportingContent = {
+            Text(
+                text = statusLabel(conv),
+                style = MaterialTheme.typography.bodySmall,
+                color = cs.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        },
+        trailingContent = if (conv.unread) {
+            {
+                Surface(
+                    shape = CircleShape,
+                    color = cs.primary,
+                    modifier = Modifier.size(8.dp),
+                ) {}
+            }
+        } else null,
+    )
+}
+
+private fun statusLabel(c: ConvItem): String {
+    val s = when (c.taskStatus) {
         "in_progress", "running" -> "运行中"
         "completed" -> "已完成"
         "interrupted" -> "已中断"
@@ -188,6 +216,6 @@ private fun buildSubtitle(c: ConvItem): String {
         else -> c.taskStatus
     }
     return if (c.workspace.isNotBlank()) {
-        "$status · ${c.workspace.substringAfterLast('\\').ifBlank { c.workspace }}"
-    } else status
+        "$s · ${c.workspace.substringAfterLast('\\').ifBlank { c.workspace }}"
+    } else s
 }

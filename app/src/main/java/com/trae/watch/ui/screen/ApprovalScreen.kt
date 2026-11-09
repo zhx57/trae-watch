@@ -1,38 +1,31 @@
 package com.trae.watch.ui.screen
 
-import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.trae.watch.ui.component.WatchScaffold
 import com.trae.watch.vm.Approval
-import com.trae.watch.ui.component.ScreenHeader
-import com.trae.watch.ui.component.WatchScreen
-import com.trae.watch.ui.theme.M3e
 
 /**
- * 审批页：工具名 + 一行摘要 + 同意/拒绝大按钮。
- * 长按摘要展开全文（Q10 选 A 的落地）。
+ * 审批页。
+ * 官方组件：Card（信息展示）+ Button（同意/拒绝，按官方 primary/secondary 强调层级）
  */
 @Composable
 fun ApprovalScreen(
@@ -41,100 +34,79 @@ fun ApprovalScreen(
     onReject: () -> Unit,
     onBack: () -> Unit,
 ) {
-    val c = M3e.color
-    val d = M3e.dimen
-    val t = M3e.type
-    var expanded by remember { mutableStateOf(false) }
-
-    WatchScreen { scale ->
-        ScreenHeader(title = "需要确认", onBack = onBack, scale = scale)
-
+    WatchScaffold(
+        title = "需要确认",
+        subtitle = approval?.toolName ?: "",
+        onBack = onBack,
+        bottomBar = {
+            Surface(tonalElevation = 2.dp) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    // 拒绝 = 中等强调（tonal），同意 = 高强调（filled）
+                    Button(
+                        onClick = onReject,
+                        modifier = Modifier.weight(1f),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.errorContainer,
+                            contentColor = MaterialTheme.colorScheme.onErrorContainer,
+                        ),
+                    ) {
+                        Text("拒绝")
+                    }
+                    Button(
+                        onClick = onApprove,
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Text("同意")
+                    }
+                }
+            }
+        },
+    ) { innerPadding ->
         if (approval == null) {
-            Box(Modifier.weight(1f)) { }
-            return@WatchScreen
-        }
-
-        Column(
-            modifier = Modifier
-                .weight(1f)
-                .fillMaxWidth()
-                .padding(horizontal = d.pad)
-                .verticalScroll(rememberScrollState()),
-        ) {
-            Text(
-                text = approval.toolName,
-                color = c.primary,
-                style = t.title,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-            )
-            Spacer(Modifier.height(d.s))
-            Box(
+            Column(
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(d.squircle))
-                    .background(c.surface)
-                    .clickable { expanded = !expanded }
-                    .padding(d.m),
+                    .padding(innerPadding)
+                    .fillMaxSize(),
+            ) {}
+        } else {
+            Column(
+                modifier = Modifier
+                    .padding(innerPadding)
+                    .fillMaxSize()
+                    .verticalScroll(rememberScrollState())
+                    .padding(12.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 Text(
-                    text = if (expanded) approval.fullText else approval.summary,
-                    color = c.onSurfaceVariant,
-                    style = t.bodySmall,
-                    maxLines = if (expanded) 40 else 2,
-                    overflow = TextOverflow.Ellipsis,
+                    text = approval.toolName,
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onSurface,
                 )
+                Card(
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                    ),
+                ) {
+                    Column(Modifier.padding(12.dp)) {
+                        Text(
+                            text = "请求内容",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            text = approval.fullText.take(1200),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                    }
+                }
             }
-            if (!expanded) {
-                Spacer(Modifier.height(d.xs))
-                Text("点击展开全文", color = c.outline, style = t.caption)
-            }
-        }
-
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = d.pad, vertical = d.m),
-            horizontalArrangement = Arrangement.spacedBy(d.s),
-        ) {
-            BigAction(
-                text = "拒绝",
-                modifier = Modifier.weight(1f),
-                bg = c.surfaceContainerHigh,
-                fg = c.danger,
-                onClick = onReject,
-            )
-            BigAction(
-                text = "同意",
-                modifier = Modifier.weight(1f),
-                bg = c.primary,
-                fg = c.onPrimary,
-                onClick = onApprove,
-            )
         }
     }
 }
-
-@Composable
-private fun BigAction(
-    text: String,
-    modifier: Modifier,
-    bg: androidx.compose.ui.graphics.Color,
-    fg: androidx.compose.ui.graphics.Color,
-    onClick: () -> Unit,
-) {
-    val d = M3e.dimen
-    Box(
-        modifier = modifier
-            .heightIn(min = (56 * 1).dp)
-            .clip(RoundedCornerShape(d.touch / 2))
-            .background(bg)
-            .clickable { onClick() },
-        contentAlignment = Alignment.Center,
-    ) {
-        Text(text = text, color = fg, style = M3e.type.label)
-    }
-}
-
-
-

@@ -1,34 +1,35 @@
 package com.trae.watch.ui.screen
 
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.trae.watch.data.db.Message
-import com.trae.watch.ui.component.EmptyHint
-import com.trae.watch.ui.component.ScreenHeader
-import com.trae.watch.ui.component.M3eButton
-import com.trae.watch.ui.component.WatchScreen
-import com.trae.watch.ui.theme.M3e
+import com.trae.watch.ui.component.WatchScaffold
 
-/** 会话详情：只渲染文本块与工具摘要 */
+/**
+ * 会话详情。
+ * 官方组件：LazyColumn + Card（消息气泡）+ Button（底部操作）
+ */
 @Composable
 fun ChatScreen(
     title: String,
@@ -39,123 +40,120 @@ fun ChatScreen(
     onInput: () -> Unit,
     onTask: () -> Unit,
 ) {
-    val c = M3e.color
-    val d = M3e.dimen
-    val t = M3e.type
     val listState = rememberLazyListState()
 
-    WatchScreen { scale ->
-        ScreenHeader(
-            title = title,
-            subtitle = when {
-                error.isNotBlank() -> error
-                running -> "运行中"
-                else -> "空闲"
-            },
-            onBack = onBack,
-            scale = scale,
-        )
-
+    WatchScaffold(
+        title = title,
+        subtitle = when {
+            error.isNotBlank() -> error
+            running -> "运行中"
+            else -> "空闲"
+        },
+        onBack = onBack,
+        bottomBar = {
+            Surface(tonalElevation = 2.dp) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Button(onClick = onInput, modifier = Modifier.weight(1f)) {
+                        Text("输入")
+                    }
+                    if (running) {
+                        FilledTonalButton(onClick = onTask, modifier = Modifier.weight(1f)) {
+                            Text("任务")
+                        }
+                    }
+                }
+            }
+        },
+    ) { innerPadding ->
         if (messages.isEmpty()) {
-            Box(Modifier.weight(1f)) { EmptyHint("还没有消息\n点下方输入开始") }
+            Column(
+                modifier = Modifier
+                    .padding(innerPadding)
+                    .fillMaxSize()
+                    .padding(24.dp),
+                verticalArrangement = Arrangement.Center,
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                Text(
+                    text = if (error.isNotBlank()) error else "还没有消息",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         } else {
             LazyColumn(
                 state = listState,
                 modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth()
-                    .padding(horizontal = d.pad),
-                verticalArrangement = Arrangement.spacedBy(d.s),
+                    .padding(innerPadding)
+                    .fillMaxSize(),
+                contentPadding = PaddingValues(12.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                items(messages, key = { it.id }) { m -> MessageBubble(m, scale) }
+                items(messages, key = { it.id }) { m -> MessageCard(m) }
             }
-            // 新消息自动滚到底
             LaunchedEffect(messages.size) {
                 if (messages.isNotEmpty()) listState.animateScrollToItem(messages.lastIndex)
             }
         }
-
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = d.pad, vertical = d.m),
-            horizontalArrangement = Arrangement.spacedBy(d.s),
-        ) {
-            M3eButton(text = "输入", modifier = Modifier.weight(1f), onClick = onInput)
-            if (running) {
-                M3eButton(
-                    text = "任务",
-                    modifier = Modifier.weight(1f),
-                    container = c.surfaceContainerHigh,
-                    contentColor = c.onSurface,
-                    onClick = onTask,
-                )
-            }
-        }
     }
 }
 
+/** 官方 Card：ElevatedCard / Card / FilledCard 三选一，这里用 tonal 区分角色 */
 @Composable
-private fun MessageBubble(m: Message, scale: Float) {
-    val c = M3e.color
-    val d = M3e.dimen
-    val t = M3e.type
+private fun MessageCard(m: Message) {
+    val cs = MaterialTheme.colorScheme
     val isUser = m.role == "user"
 
-    val bg = when (m.type) {
-        "tool" -> c.surfaceContainerHigh
-        "error" -> c.danger.copy(alpha = 0.15f)
-        "plan" -> c.surface
-        else -> if (isUser) c.primary.copy(alpha = 0.14f) else c.surface
+    val container = when (m.type) {
+        "error" -> cs.errorContainer
+        "tool" -> cs.secondaryContainer
+        "plan" -> cs.surfaceVariant
+        else -> if (isUser) cs.primaryContainer else cs.surfaceVariant
     }
-    val fg = when (m.type) {
-        "error" -> c.danger
-        "tool" -> c.primary
-        else -> c.onSurface
+    val content = when (m.type) {
+        "error" -> cs.onErrorContainer
+        "tool" -> cs.onSecondaryContainer
+        "plan" -> cs.onSurfaceVariant
+        else -> if (isUser) cs.onPrimaryContainer else cs.onSurfaceVariant
     }
 
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(if (isUser) (18 * scale).dp else (16 * scale).dp))
-            .background(bg)
-            .padding(horizontal = d.m, vertical = d.s),
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = container),
     ) {
-        when (m.type) {
-            "tool" -> {
-                Text("工具", color = c.outline, style = t.caption)
+        Column(modifier = Modifier.padding(12.dp)) {
+            if (m.type != "text") {
                 Text(
-                    text = m.text,
-                    color = fg,
-                    style = t.bodySmall,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
+                    text = when (m.type) {
+                        "tool" -> "工具调用"
+                        "plan" -> "计划"
+                        "error" -> "错误"
+                        else -> m.type
+                    },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = content.copy(alpha = 0.7f),
                 )
             }
-            "plan" -> {
-                Text("计划", color = c.outline, style = t.caption)
+            Text(
+                text = m.text,
+                style = if (isUser) MaterialTheme.typography.bodyLarge
+                else MaterialTheme.typography.bodyMedium,
+                color = content,
+                maxLines = if (m.type == "tool") 2 else 20,
+                overflow = TextOverflow.Ellipsis,
+            )
+            if (m.status == "failed") {
                 Text(
-                    text = m.text,
-                    color = c.onSurfaceVariant,
-                    style = t.bodySmall,
-                    maxLines = 3,
-                    overflow = TextOverflow.Ellipsis,
+                    text = "发送失败",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = cs.error,
                 )
-            }
-            else -> {
-                Text(
-                    text = m.text,
-                    color = fg,
-                    style = if (isUser) t.body else t.bodySmall,
-                )
-                if (m.status == "failed") {
-                    Spacer(Modifier.height(2.dp))
-                    Text("发送失败", color = c.danger, style = t.caption)
-                }
             }
         }
     }
 }
-
-
-

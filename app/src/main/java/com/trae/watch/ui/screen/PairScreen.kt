@@ -1,41 +1,32 @@
 package com.trae.watch.ui.screen
 
-import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Button
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import androidx.compose.foundation.text.KeyboardOptions
-import com.trae.watch.ui.component.WatchScreen
-import com.trae.watch.ui.theme.M3e
+import com.trae.watch.ui.component.WatchScaffold
 
 /**
- * 配对页：6 位码（主）/ 粘贴载荷（备）。
- *
- * 6 位码走局域网 POST http://host:port/pair，由 pair/pair.py 提供。
+ * 配对页。
+ * 官方组件：OutlinedTextField（IP / 端口 / 配对码）+ Button
  */
 @Composable
 fun PairScreen(
@@ -44,143 +35,93 @@ fun PairScreen(
     onPair: (host: String, port: String, code: String) -> Unit,
     onPastePayload: (String) -> Unit,
 ) {
-    val c = M3e.color
-    val d = M3e.dimen
-    val t = M3e.type
-
     var host by remember { mutableStateOf("192.168.1.100") }
     var port by remember { mutableStateOf("8080") }
     var code by remember { mutableStateOf("") }
     var payload by remember { mutableStateOf("") }
-    var mode by remember { mutableStateOf(0) } // 0=code, 1=payload
+    var mode by remember { mutableStateOf(0) }
 
-    WatchScreen { scale ->
+    WatchScaffold(
+        title = "连接 TRAE",
+        subtitle = if (mode == 0) "输入配对码" else "粘贴载荷",
+        bottomBar = {
+            Button(
+                onClick = {
+                    if (mode == 0) onPair(host.trim(), port.trim(), code)
+                    else onPastePayload(payload)
+                },
+                enabled = !pairing && (if (mode == 0) code.length == 6 else payload.isNotBlank()),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+            ) {
+                Text(if (pairing) "连接中…" else "连接")
+            }
+        },
+    ) { innerPadding ->
         Column(
             modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = d.pad, vertical = d.l)
-                .verticalScroll(rememberScrollState()),
-            horizontalAlignment = Alignment.CenterHorizontally,
+                .padding(innerPadding)
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            Text("连接 Trae", color = c.onSurface, style = t.title)
-            Spacer(Modifier.height(d.xs))
-            Text(
-                text = if (mode == 0) "在电脑上运行 pair.py 获取配对码" else "粘贴配对载荷",
-                color = c.onSurfaceVariant,
-                style = t.caption,
-                textAlign = TextAlign.Center,
-            )
-            Spacer(Modifier.height(d.m))
-
-            Row(horizontalArrangement = Arrangement.spacedBy(d.s)) {
-                TabChip("配对码", mode == 0, Modifier.weight(1f)) { mode = 0 }
-                TabChip("载荷", mode == 1, Modifier.weight(1f)) { mode = 1 }
+            if (error.isNotBlank()) {
+                Text(
+                    text = error,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
             }
-            Spacer(Modifier.height(d.m))
 
             if (mode == 0) {
-                Field(host, { host = it }, "电脑 IP", 15, KeyboardType.Text, scale)
-                Spacer(Modifier.height(d.s))
-                Field(port, { port = it }, "端口", 5, KeyboardType.Number, scale)
-                Spacer(Modifier.height(d.s))
-                Field(code, { if (it.length <= 6) code = it.filter { ch -> ch.isDigit() } }, "6 位码", 6, KeyboardType.Number, scale)
+                OutlinedTextField(
+                    value = host,
+                    onValueChange = { host = it },
+                    label = { Text("电脑 IP") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                OutlinedTextField(
+                    value = port,
+                    onValueChange = { if (it.length <= 5) port = it.filter(Char::isDigit) },
+                    label = { Text("端口") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                OutlinedTextField(
+                    value = code,
+                    onValueChange = { if (it.length <= 6) code = it.filter(Char::isDigit) },
+                    label = { Text("6 位配对码") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Text(
+                    text = "在电脑上运行 pair/pair.py 获取配对码",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             } else {
                 OutlinedTextField(
                     value = payload,
                     onValueChange = { payload = it },
+                    label = { Text("配对载荷") },
+                    placeholder = { Text("TRAE1:...") },
+                    maxLines = 4,
                     modifier = Modifier.fillMaxWidth(),
-                    placeholder = { Text("TRAE1:...", style = t.caption, color = c.outline) },
-                    textStyle = t.caption.copy(color = c.onSurface),
-                    maxLines = 3,
-                    shape = RoundedCornerShape(d.squircle),
-                    colors = TextFieldDefaults.colors(
-                        focusedContainerColor = c.surface,
-                        unfocusedContainerColor = c.surface,
-                        focusedIndicatorColor = c.primary,
-                        unfocusedIndicatorColor = c.outlineVariant,
-                        cursorColor = c.primary,
-                    ),
                 )
             }
 
-            if (error.isNotBlank()) {
-                Spacer(Modifier.height(d.s))
-                Text(error, color = c.danger, style = t.caption)
-            }
-
-            Spacer(Modifier.height(d.m))
-
-            val enabled = !pairing && (if (mode == 0) code.length == 6 else payload.isNotBlank())
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(min = d.touch)
-                    .clip(RoundedCornerShape(d.touch / 2))
-                    .background(if (enabled) c.primary else c.surfaceContainerHigh)
-                    .clickable(enabled = enabled) {
-                        if (mode == 0) onPair(host.trim(), port.trim(), code) else onPastePayload(payload)
-                    },
-                contentAlignment = Alignment.Center,
+            Spacer(Modifier.height(8.dp))
+            Button(
+                onClick = { mode = if (mode == 0) 1 else 0 },
+                modifier = Modifier.fillMaxWidth(),
             ) {
-                Text(
-                    text = if (pairing) "连接中…" else "连接",
-                    color = if (enabled) c.onPrimary else c.outline,
-                    style = t.label,
-                )
+                Text(if (mode == 0) "改用载荷" else "改用配对码")
             }
         }
     }
 }
-
-@Composable
-private fun Field(
-    value: String,
-    onChange: (String) -> Unit,
-    placeholder: String,
-    maxLen: Int,
-    kb: KeyboardType,
-    scale: Float,
-) {
-    val c = M3e.color
-    val d = M3e.dimen
-    OutlinedTextField(
-        value = value,
-        onValueChange = { if (it.length <= maxLen) onChange(it) },
-        modifier = Modifier.fillMaxWidth(),
-        placeholder = { Text(placeholder, style = M3e.type.caption, color = c.outline) },
-        textStyle = M3e.type.body.copy(color = c.onSurface),
-        singleLine = true,
-        shape = RoundedCornerShape(d.squircle),
-        keyboardOptions = KeyboardOptions(keyboardType = kb),
-        colors = TextFieldDefaults.colors(
-            focusedContainerColor = c.surface,
-            unfocusedContainerColor = c.surface,
-            focusedIndicatorColor = c.primary,
-            unfocusedIndicatorColor = c.outlineVariant,
-            cursorColor = c.primary,
-        ),
-    )
-}
-
-@Composable
-private fun TabChip(text: String, active: Boolean, modifier: Modifier, onClick: () -> Unit) {
-    val c = M3e.color
-    val d = M3e.dimen
-    Box(
-        modifier = modifier
-            .heightIn(min = (40 * 1).dp)
-            .clip(RoundedCornerShape(d.touch / 2))
-            .background(if (active) c.primary.copy(alpha = 0.18f) else c.surface)
-            .clickable { onClick() },
-        contentAlignment = Alignment.Center,
-    ) {
-        Text(
-            text = text,
-            color = if (active) c.primary else c.onSurfaceVariant,
-            style = M3e.type.caption,
-        )
-    }
-}
-
-
-
