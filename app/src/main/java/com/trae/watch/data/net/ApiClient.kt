@@ -120,12 +120,16 @@ class ApiClient(private val tokenProvider: () -> String) {
 
     // ---------- 模型 ----------
 
-    /** GET /api/remote/v1/models，只取 solo_coder 这一组 */
-    fun models(): List<ModelItem> {
+    /** 拉原始响应体，用于同时缓存与解析 */
+    fun modelsRaw(): String? {
         val r = get(Api.HOST_AI, Api.PATH_MODELS)
-        if (!r.ok) return emptyList()
+        return if (r.ok && r.body.isNotBlank()) r.body else null
+    }
+
+    /** 解析模型列表，可独立调用（缓存复用时也走这里） */
+    fun parseModels(raw: String): List<ModelItem> {
         return try {
-            val root = json.parseToJsonElement(r.body).jsonObject
+            val root = json.parseToJsonElement(raw).jsonObject
             val list = root["data"]?.jsonObject?.get("list") as? JsonArray ?: return emptyList()
             val out = ArrayList<ModelItem>()
             for (g in list) {
@@ -149,6 +153,8 @@ class ApiClient(private val tokenProvider: () -> String) {
             emptyList()
         }
     }
+
+    fun models(): List<ModelItem> = modelsRaw()?.let { parseModels(it) } ?: emptyList()
 
     // ---------- 消息 ----------
 

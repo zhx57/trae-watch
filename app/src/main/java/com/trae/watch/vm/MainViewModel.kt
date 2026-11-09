@@ -48,6 +48,9 @@ data class UiState(
     val tab: Int = 0,                       // 0=本地 1=云端
     val models: List<ModelItem> = emptyList(),
     val selectedModel: String = "",
+    val modelsLoading: Boolean = false,
+    val modelsError: String = "",
+    val modelsUpdatedAt: Long = 0L,
     val error: String = "",
 )
 
@@ -61,8 +64,26 @@ class MainViewModel(private val graph: AppGraph) : ViewModel() {
     private var sse: SseReader? = null
 
     init {
+        // 先用缓存的模型列表填充，保证冷启动即可显示
+        val cachedRaw = graph.modelCache.cachedRaw()
+        val cachedModels = cachedRaw?.let { graph.api.parseModels(it) } ?: emptyList()
+        val cachedSelected = graph.modelCache.selected()
+        _state.value = _state.value.copy(
+            models = cachedModels,
+            selectedModel = cachedSelected.ifBlank {
+                cachedModels.firstOrNull { it.isDefault }?.name
+                    ?: cachedModels.firstOrNull()?.name ?: ""
+            },
+        )
+
         if (graph.token.hasAccount) {
-            viewModelScope.launch(Dispatchers.IO) { loadConversations() }
+            viewModelScope.launch(Dispatchers.IO) {
+                loadConversations()
+                // 缓存过期或为空时，启动即静默刷新模型
+                if (graph.modelCache.isStale() || cachedModels.isEmpty()) {
+                    refreshModelsInternal()
+                }
+            }
         } else {
             _state.value = _state.value.copy(screen = Screen.PAIR)
         }
@@ -74,20 +95,66 @@ class MainViewModel(private val graph: AppGraph) : ViewModel() {
         viewModelScope.launch(Dispatchers.IO) {
             val local = runCatching { graph.api.localConversations() }.getOrDefault(emptyList())
             val cloud = runCatching { graph.api.cloudSessions() }.getOrDefault(emptyList())
-            val models = runCatching { graph.api.models() }.getOrDefault(emptyList())
             val all = (local + cloud).sortedByDescending { it.updatedAt }
-            val defModel = models.firstOrNull { it.isDefault }?.name
-                ?: models.firstOrNull()?.name ?: ""
             withContext(Dispatchers.Main) {
                 _state.value = _state.value.copy(
                     conversations = if (_state.value.tab == 0) local else cloud,
                     allConversations = all,
-                    models = models,
-                    selectedModel = _state.value.selectedModel.ifBlank { defModel },
                     loading = false,
                     error = "",
                 )
             }
+        }
+    }
+
+    // ---------------- 模型 ----------------
+
+    /** 进入模型页：立刻刷新，保证拿到最新列表 */
+    fun openModels() {
+        _state.value = _state.value.copy(screen = Screen.MODELS, modelsLoading = true)
+        viewModelScope.launch(Dispatchers.IO) { refreshModelsInternal() }
+    }
+
+    /** 模型页手动刷新 */
+    fun refreshModels() {
+        _state.value = _state.value.copy(modelsLoading = true)
+        viewModelScope.launch(Dispatchers.IO) { refreshModelsInternal() }
+    }
+
+    private suspend fun refreshModelsInternal() {
+        val raw = runCatching { graph.api.modelsRaw() }.getOrNull()
+        if (raw == null) {
+            withContext(Dispatchers.Main) {
+                _state.value = _state.value.copy(
+                    modelsLoading = false,
+                    modelsError = "模型列表获取失败",
+                )
+            }
+            return
+        }
+        val list = graph.api.parseModels(raw)
+        if (list.isEmpty()) {
+            withContext(Dispatchers.Main) {
+                _state.value = _state.value.copy(modelsLoading = false, modelsError = "返回为空")
+            }
+            return
+        }
+        graph.modelCache.saveRaw(raw)
+        withContext(Dispatchers.Main) {
+            val cur = _state.value.selectedModel
+            // 若之前选的模型已下架，回落到默认
+            val valid = list.any { it.name == cur }
+            val selected = if (valid) cur else {
+                list.firstOrNull { it.isDefault }?.name ?: list.first().name
+            }
+            if (!valid && selected.isNotBlank()) graph.modelCache.saveSelected(selected)
+            _state.value = _state.value.copy(
+                models = list,
+                selectedModel = selected,
+                modelsLoading = false,
+                modelsError = "",
+                modelsUpdatedAt = System.currentTimeMillis(),
+            )
         }
     }
 
@@ -143,9 +210,9 @@ class MainViewModel(private val graph: AppGraph) : ViewModel() {
 
     fun openInput() { _state.value = _state.value.copy(screen = Screen.INPUT) }
     fun openTask() { _state.value = _state.value.copy(screen = Screen.TASK) }
-    fun openModels() { _state.value = _state.value.copy(screen = Screen.MODELS) }
 
     fun selectModel(name: String) {
+        graph.modelCache.saveSelected(name)
         _state.value = _state.value.copy(selectedModel = name, screen = Screen.INPUT)
     }
 

@@ -100,7 +100,11 @@ class MainActivity : ComponentActivity() {
             Screen.MODELS -> ModelsScreen(
                 models = st.models,
                 selected = st.selectedModel,
+                loading = st.modelsLoading,
+                error = st.modelsError,
+                updatedAt = st.modelsUpdatedAt,
                 onSelect = vm::selectModel,
+                onRefresh = vm::refreshModels,
                 onBack = { vm.returnToListFromModels() },
             )
             Screen.APPROVAL -> ApprovalScreen(

@@ -4,6 +4,7 @@ import android.content.Context
 import com.trae.watch.data.db.Db
 import com.trae.watch.data.db.MessageStore
 import com.trae.watch.data.net.ApiClient
+import com.trae.watch.data.net.ModelCache
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
@@ -47,4 +48,5 @@ class AppGraph(context: Context) {
     val token = TokenManager(app)
     val store = MessageStore(Db(app))
     val api = ApiClient { token.accessToken() }
+    val modelCache = ModelCache(app)
 }
