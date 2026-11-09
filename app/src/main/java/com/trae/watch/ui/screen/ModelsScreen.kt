@@ -1,5 +1,6 @@
 package com.trae.watch.ui.screen
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -92,7 +93,9 @@ fun ModelsScreen(
                 items(models, key = { it.name }) { m ->
                     val active = m.name == selected
                     ListItem(
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onSelect(m.name) },
                         colors = ListItemDefaults.colors(
                             containerColor = if (active) MaterialTheme.colorScheme.secondaryContainer
                             else MaterialTheme.colorScheme.surface,
@@ -120,13 +123,6 @@ fun ModelsScreen(
                                 )
                             }
                         } else null,
-                        trailingContent = {
-                            Surface(
-                                onClick = { onSelect(m.name) },
-                                color = MaterialTheme.colorScheme.surface,
-                                modifier = Modifier.size(1.dp),
-                            ) {}
-                        },
                     )
                     HorizontalDivider(
                         modifier = Modifier.padding(start = 56.dp),

@@ -13,12 +13,17 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
@@ -28,19 +33,28 @@ import com.trae.watch.ui.component.WatchScaffold
 
 /**
  * 会话详情。
- * 官方组件：LazyColumn + Card（消息气泡）+ Button（底部操作）
+ *
+ * 交互参照主流 AI 对话客户端（ChatGPT / Claude / 豆包 / Kimi）的共通形态：
+ *  - 消息流占满主体，自动吸底到最新一条
+ *  - 输入框常驻底部，不需要跳转到独立页面
+ *  - 顶部标题栏显示当前模型，可点击切换
+ *
+ * 组件全部为官方：LazyColumn + Card + OutlinedTextField + Button。
  */
 @Composable
 fun ChatScreen(
     title: String,
     messages: List<Message>,
     running: Boolean,
+    modelName: String = "",
     error: String = "",
     onBack: () -> Unit,
-    onInput: () -> Unit,
+    onSend: (String) -> Unit,
+    onPickModel: () -> Unit,
     onTask: () -> Unit,
 ) {
     val listState = rememberLazyListState()
+    var draft by remember { mutableStateOf("") }
 
     WatchScaffold(
         title = title,
@@ -50,21 +64,49 @@ fun ChatScreen(
             else -> "空闲"
         },
         onBack = onBack,
+        actions = {
+            TextButton(onClick = onPickModel) {
+                Text(
+                    text = modelName.ifBlank { "模型" },
+                    style = MaterialTheme.typography.labelMedium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            if (running) {
+                TextButton(onClick = onTask) {
+                    Text("任务", style = MaterialTheme.typography.labelMedium)
+                }
+            }
+        },
         bottomBar = {
             Surface(tonalElevation = 2.dp) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 12.dp, vertical = 8.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        .padding(horizontal = 8.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
-                    Button(onClick = onInput, modifier = Modifier.weight(1f)) {
-                        Text("输入")
-                    }
-                    if (running) {
-                        FilledTonalButton(onClick = onTask, modifier = Modifier.weight(1f)) {
-                            Text("任务")
-                        }
+                    OutlinedTextField(
+                        value = draft,
+                        onValueChange = { if (it.length <= 500) draft = it },
+                        modifier = Modifier.weight(1f),
+                        placeholder = { Text("输入内容") },
+                        maxLines = 2,
+                        textStyle = MaterialTheme.typography.bodySmall,
+                    )
+                    Button(
+                        onClick = {
+                            val t = draft.trim()
+                            if (t.isNotEmpty()) {
+                                onSend(t)
+                                draft = ""
+                            }
+                        },
+                        enabled = draft.isNotBlank(),
+                    ) {
+                        Text("发送")
                     }
                 }
             }
@@ -80,7 +122,7 @@ fun ChatScreen(
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
                 Text(
-                    text = if (error.isNotBlank()) error else "还没有消息",
+                    text = if (error.isNotBlank()) error else "还没有消息，直接输入发第一条",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -96,6 +138,7 @@ fun ChatScreen(
             ) {
                 items(messages, key = { it.id }) { m -> MessageCard(m) }
             }
+            // 新消息吸底，和主流对话 App 一致
             LaunchedEffect(messages.size) {
                 if (messages.isNotEmpty()) listState.animateScrollToItem(messages.lastIndex)
             }

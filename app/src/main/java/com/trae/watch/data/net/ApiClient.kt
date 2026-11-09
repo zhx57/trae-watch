@@ -24,6 +24,7 @@ data class ConvItem(
     val cliId: String = "",
     val cliType: String = "local",
     val projectId: String = "",
+    val pinned: Boolean = false,
 )
 
 data class ModelItem(val name: String, val displayName: String, val isDefault: Boolean)
@@ -87,6 +88,7 @@ class ApiClient(
                     cliId = o["cli_id"]?.s() ?: "",
                     cliType = o["cli_type"]?.s() ?: "local",
                     projectId = o["owner_project_id"]?.s() ?: "",
+                    pinned = o["is_pinned"]?.s() == "true",
                 )
             }
         } catch (e: Exception) {
@@ -222,6 +224,55 @@ class ApiClient(
     fun sendDecision(convId: String, taskId: String, approved: Boolean): Result {
         val payload = """{"chat_session_id":"$convId","task_id":"$taskId","decision":${if (approved) 1 else 2}}"""
         return post(Api.HOST_AI, Api.PATH_USER_DECISION, payload)
+    }
+
+    /** 置顶/取消置顶（反编译 ConversationMutation.SetPinned） */
+    fun setPinned(convId: String, pinned: Boolean): Result {
+        val path = if (pinned) Api.PATH_PIN else Api.PATH_UNPIN
+        return post(Api.HOST_AI, path, """{"conversationId":"$convId"}""")
+    }
+
+    /** 删除会话（DELETE，body 为 conversationId） */
+    fun deleteConversation(convId: String): Result =
+        exec(
+            Request.Builder()
+                .url(Api.HOST_AI + Api.PATH_CONVERSATIONS)
+                .delete("""{"conversationId":"$convId"}""".toRequestBody(jsonMedia))
+        )
+
+    /** 搜索会话（query: keyword + page） */
+    fun searchConversations(keyword: String, pageSize: Int = 20, pageIndex: Int = 0): List<ConvItem> {
+        val kw = java.net.URLEncoder.encode(keyword, "UTF-8")
+        val r = get(
+            Api.HOST_AI,
+            "${Api.PATH_SEARCH}?keyword=$kw&page_size=$pageSize&page_index=$pageIndex",
+        )
+        if (!r.ok) return emptyList()
+        return try {
+            val data = json.parseToJsonElement(r.body).jsonObject["data"]?.jsonObject ?: return emptyList()
+            val arr = data["conversations"] as? JsonArray
+                ?: data["items"] as? JsonArray
+                ?: return emptyList()
+            arr.mapNotNull { el ->
+                val o = el as? JsonObject ?: return@mapNotNull null
+                val id = o["id"]?.s() ?: return@mapNotNull null
+                ConvItem(
+                    id = id,
+                    title = o["title"]?.s() ?: "未命名",
+                    source = ConvSource.LOCAL,
+                    taskStatus = o["latest_task_status"]?.s() ?: "",
+                    updatedAt = parseIso(o["updated_at"]?.s()),
+                    workspace = o["workspace"]?.s() ?: "",
+                    unread = false,
+                    cliId = o["cli_id"]?.s() ?: "",
+                    cliType = o["cli_type"]?.s() ?: "local",
+                    projectId = o["owner_project_id"]?.s() ?: "",
+                    pinned = o["is_pinned"]?.s() == "true",
+                )
+            }
+        } catch (e: Exception) {
+            emptyList()
+        }
     }
 
     fun cancelTask(convId: String, taskId: String): Result {

@@ -20,6 +20,9 @@ object Api {
     const val PATH_CANCEL_TASK = "/api/solo_hub/v1/conversations/tasks/cancel"
     const val PATH_CONFIRM = "/api/solo_hub/v1/conversations/tasks/confirm"
     const val PATH_USER_DECISION = "/api/solo_hub/v1/conversations/user_decision"
+    const val PATH_PIN = "/api/solo_hub/v1/conversations/pin"
+    const val PATH_UNPIN = "/api/solo_hub/v1/conversations/unpin"
+    const val PATH_SEARCH = "/api/solo_hub/v1/conversations/search"
 
     /** SSE 事件流 */
     fun ssePath(chatSessionId: String, messageId: String = "") =

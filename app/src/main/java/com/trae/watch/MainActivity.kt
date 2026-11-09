@@ -8,6 +8,7 @@ import android.os.Bundle
 import android.os.PowerManager
 import android.provider.Settings
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.Composable
@@ -16,7 +17,6 @@ import androidx.compose.runtime.getValue
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.trae.watch.ui.screen.ApprovalScreen
 import com.trae.watch.ui.screen.ChatScreen
-import com.trae.watch.ui.screen.InputScreen
 import com.trae.watch.ui.screen.ListScreen
 import com.trae.watch.ui.screen.ModelsScreen
 import com.trae.watch.ui.screen.PairScreen
@@ -39,8 +39,10 @@ class MainActivity : ComponentActivity() {
                 val vm: MainViewModel = viewModel { MainViewModel(graph) }
                 val st by vm.state.collectAsState()
 
-                // 修复：返回键必须逐级回退，而不是直接退出 App
-                androidx.activity.compose.BackHandler(enabled = true) {
+                // 返回键逐级回退：
+                // 根页面（列表 / 配对）不拦截，交给系统退出；其余页面拦截并回上一级。
+                val isRoot = st.screen == Screen.LIST || st.screen == Screen.PAIR
+                BackHandler(enabled = !isRoot) {
                     vm.back()
                 }
 
@@ -72,6 +74,7 @@ class MainActivity : ComponentActivity() {
 
     @Composable
     private fun Root(vm: MainViewModel, st: UiState) {
+        val modelLabel = st.models.firstOrNull { it.name == st.selectedModel }?.displayName ?: ""
         when (st.screen) {
             Screen.PAIR -> PairScreen(
                 pairing = st.pairing,
@@ -83,26 +86,25 @@ class MainActivity : ComponentActivity() {
                 conversations = st.conversations,
                 tab = st.tab,
                 loading = st.loading,
-                modelName = st.models.firstOrNull { it.name == st.selectedModel }?.displayName ?: "",
+                error = st.error,
+                modelName = modelLabel,
                 onSwitchTab = vm::switchTab,
                 onOpen = vm::openConversation,
                 onRefresh = vm::refresh,
                 onModels = vm::openModels,
+                onTogglePin = vm::togglePin,
+                onDelete = vm::deleteConversation,
             )
             Screen.CHAT -> ChatScreen(
                 title = st.currentTitle,
                 messages = st.messages,
                 running = st.runningTaskId.isNotEmpty(),
+                modelName = modelLabel,
                 error = st.error,
                 onBack = vm::backToList,
-                onInput = vm::openInput,
-                onTask = vm::openTask,
-            )
-            Screen.INPUT -> InputScreen(
-                modelName = st.models.firstOrNull { it.name == st.selectedModel }?.displayName ?: "",
                 onSend = vm::send,
                 onPickModel = vm::openModels,
-                onBack = { vm.backToList(); },
+                onTask = vm::openTask,
             )
             Screen.MODELS -> ModelsScreen(
                 models = st.models,
@@ -126,7 +128,7 @@ class MainActivity : ComponentActivity() {
                 startedAt = st.runningSince,
                 stepText = st.messages.lastOrNull { it.type == "tool" || it.type == "plan" }?.text ?: "",
                 onCancel = vm::cancelTask,
-                onBack = { vm.backToList(); },
+                onBack = { vm.back() },
             )
         }
     }

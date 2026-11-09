@@ -18,7 +18,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-enum class Screen { LIST, CHAT, APPROVAL, INPUT, TASK, PAIR, MODELS }
+enum class Screen { LIST, CHAT, APPROVAL, TASK, PAIR, MODELS }
 
 data class Approval(
     val convId: String,
@@ -94,10 +94,15 @@ class MainViewModel(private val graph: AppGraph) : ViewModel() {
         viewModelScope.launch(Dispatchers.IO) {
             val local = runCatching { graph.api.localConversations() }.getOrDefault(emptyList())
             val cloud = runCatching { graph.api.cloudSessions() }.getOrDefault(emptyList())
-            val all = (local + cloud).sortedByDescending { it.updatedAt }
+            // 置顶优先，其次按更新时间倒序
+            val all = (local + cloud).sortedWith(
+                compareByDescending<ConvItem> { it.pinned }.thenByDescending { it.updatedAt }
+            )
             withContext(Dispatchers.Main) {
                 _state.value = _state.value.copy(
-                    conversations = if (_state.value.tab == 0) local else cloud,
+                    conversations = all.filter {
+                        it.source == if (_state.value.tab == 0) ConvSource.LOCAL else ConvSource.CLOUD
+                    },
                     allConversations = all,
                     loading = false,
                     error = "",
@@ -158,11 +163,8 @@ class MainViewModel(private val graph: AppGraph) : ViewModel() {
     }
 
     fun switchTab(tab: Int) {
-        val all = _state.value.allConversations
-        val filtered = if (tab == 0) {
-            all.filter { it.source == ConvSource.LOCAL }
-        } else {
-            all.filter { it.source == ConvSource.CLOUD }
+        val filtered = _state.value.allConversations.filter {
+            it.source == if (tab == 0) ConvSource.LOCAL else ConvSource.CLOUD
         }
         _state.value = _state.value.copy(tab = tab, conversations = filtered)
     }
@@ -246,7 +248,7 @@ class MainViewModel(private val graph: AppGraph) : ViewModel() {
             Screen.MODELS -> {
                 val s = _state.value
                 _state.value = s.copy(
-                    screen = if (s.currentConvId.isBlank()) Screen.LIST else Screen.INPUT,
+                    screen = if (s.currentConvId.isBlank()) Screen.LIST else Screen.CHAT,
                 )
                 true
             }
@@ -258,10 +260,6 @@ class MainViewModel(private val graph: AppGraph) : ViewModel() {
                 _state.value = _state.value.copy(screen = Screen.CHAT)
                 true
             }
-            Screen.INPUT -> {
-                _state.value = _state.value.copy(screen = Screen.CHAT)
-                true
-            }
             Screen.CHAT -> {
                 backToList()
                 true
@@ -269,20 +267,73 @@ class MainViewModel(private val graph: AppGraph) : ViewModel() {
         }
     }
 
-    fun openInput() { _state.value = _state.value.copy(screen = Screen.INPUT) }
     fun openTask() { _state.value = _state.value.copy(screen = Screen.TASK) }
 
     fun selectModel(name: String) {
         graph.modelCache.saveSelected(name)
-        _state.value = _state.value.copy(selectedModel = name, screen = Screen.INPUT)
+        val s = _state.value
+        _state.value = s.copy(
+            selectedModel = name,
+            screen = if (s.currentConvId.isBlank()) Screen.LIST else Screen.CHAT,
+        )
     }
 
     /** 从模型页返回：有当前会话则回聊天，否则回列表 */
     fun returnToListFromModels() {
         val s = _state.value
         _state.value = s.copy(
-            screen = if (s.currentConvId.isBlank()) Screen.LIST else Screen.INPUT,
+            screen = if (s.currentConvId.isBlank()) Screen.LIST else Screen.CHAT,
         )
+    }
+
+    // ---------------- 会话操作 ----------------
+
+    /** 置顶 / 取消置顶。先本地乐观更新，失败再回滚并提示 */
+    fun togglePin(c: ConvItem) {
+        val target = !c.pinned
+        applyPinned(c.id, target)
+        viewModelScope.launch(Dispatchers.IO) {
+            val r = runCatching { graph.api.setPinned(c.id, target) }.getOrNull()
+            if (r == null || !r.bizOk) {
+                applyPinned(c.id, !target)
+                withContext(Dispatchers.Main) {
+                    _state.value = _state.value.copy(error = "置顶操作失败")
+                }
+            }
+        }
+    }
+
+    private fun applyPinned(id: String, pinned: Boolean) {
+        fun List<ConvItem>.map() = this.map { if (it.id == id) it.copy(pinned = pinned) else it }
+        val s = _state.value
+        // 置顶项排最前，其余按更新时间
+        val all = s.allConversations.map().sortedWith(
+            compareByDescending<ConvItem> { it.pinned }.thenByDescending { it.updatedAt }
+        )
+        _state.value = s.copy(
+            allConversations = all,
+            conversations = all.filter { it.source == if (s.tab == 0) ConvSource.LOCAL else ConvSource.CLOUD },
+            currentConv = s.currentConv?.let { c -> if (c.id == id) c.copy(pinned = pinned) else c },
+        )
+    }
+
+    /** 删除会话。先本地移除，失败再刷新还原 */
+    fun deleteConversation(c: ConvItem) {
+        val s = _state.value
+        _state.value = s.copy(
+            allConversations = s.allConversations.filterNot { it.id == c.id },
+            conversations = s.conversations.filterNot { it.id == c.id },
+            error = "",
+        )
+        viewModelScope.launch(Dispatchers.IO) {
+            val r = runCatching { graph.api.deleteConversation(c.id) }.getOrNull()
+            if (r == null || !r.bizOk) {
+                withContext(Dispatchers.Main) {
+                    _state.value = _state.value.copy(error = "删除失败")
+                }
+                loadConversations()
+            }
+        }
     }
 
     // ---------------- 发送 ----------------
