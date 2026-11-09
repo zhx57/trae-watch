@@ -68,7 +68,18 @@ data class M3eColors(
     val outlineVariant: Color = Color(0xFF3F4943),
     val inverseSurface: Color = Color(0xFFE0E4DF),
     val inverseOnSurface: Color = Color(0xFF2D322E),
-)
+) {
+    // 旧字段名兼容别名，避免批量迁移遗漏
+    val surface: Color get() = surfaceContainer
+    val surfaceHigh: Color get() = surfaceContainerHigh
+    val bg: Color get() = surfaceContainerLowest
+    val textPrimary: Color get() = onSurface
+    val textSecondary: Color get() = onSurfaceVariant
+    val textMuted: Color get() = outline
+    val divider: Color get() = outlineVariant
+    val danger: Color get() = error
+    val warning: Color get() = tertiary
+}
 
 @Immutable
 data class M3eDimens(
@@ -119,7 +130,11 @@ data class M3eType(
         fontFamily = FontFamily.SansSerif, fontWeight = FontWeight.Medium,
         fontSize = 11.sp, lineHeight = 14.sp, letterSpacing = 0.5.sp,
     ),
-)
+) {
+    // 旧字阶别名
+    val caption: TextStyle get() = labelSmall
+    val bodyLarge: TextStyle get() = body
+}
 
 val LocalM3eColors = staticCompositionLocalOf { M3eColors() }
 val LocalM3eDimens = staticCompositionLocalOf { M3eDimens() }

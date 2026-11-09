@@ -86,7 +86,7 @@ fun ChatScreen(
                 M3eButton(
                     text = "任务",
                     modifier = Modifier.weight(1f),
-                    color = c.surfaceContainerHigh,
+                    container = c.surfaceContainerHigh,
                     contentColor = c.onSurface,
                     onClick = onTask,
                 )
