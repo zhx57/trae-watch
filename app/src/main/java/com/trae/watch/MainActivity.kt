@@ -38,6 +38,12 @@ class MainActivity : ComponentActivity() {
             TraeWatchTheme {
                 val vm: MainViewModel = viewModel { MainViewModel(graph) }
                 val st by vm.state.collectAsState()
+
+                // 修复：返回键必须逐级回退，而不是直接退出 App
+                androidx.activity.compose.BackHandler(enabled = true) {
+                    vm.back()
+                }
+
                 Root(vm, st)
             }
         }

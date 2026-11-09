@@ -80,10 +80,8 @@ class MainViewModel(private val graph: AppGraph) : ViewModel() {
         if (graph.token.hasAccount) {
             viewModelScope.launch(Dispatchers.IO) {
                 loadConversations()
-                // 缓存过期或为空时，启动即静默刷新模型
-                if (graph.modelCache.isStale() || cachedModels.isEmpty()) {
-                    refreshModelsInternal()
-                }
+                // 启动即强制刷新模型，保证列表是实时的
+                refreshModelsInternal()
             }
         } else {
             _state.value = _state.value.copy(screen = Screen.PAIR)
@@ -187,19 +185,22 @@ class MainViewModel(private val graph: AppGraph) : ViewModel() {
             error = "",
         )
         viewModelScope.launch(Dispatchers.IO) {
-            // 补齐 cli_id / project_id / workspace（发消息必需）
+            // 补齐 cli_id / project_id / workspace（tasks/create 必填）
             var conv = c
-            if (c.source == ConvSource.LOCAL && (c.cliId.isBlank() || c.projectId.isBlank())) {
-                graph.api.conversationDetail(c.id)?.let { conv = it.copy(title = c.title) }
-                withContext(Dispatchers.Main) {
-                    _state.value = _state.value.copy(currentConv = conv)
+            if (c.cliId.isBlank() || c.projectId.isBlank()) {
+                val detail = runCatching { graph.api.conversationDetail(c.id) }.getOrNull()
+                if (detail != null) {
+                    conv = detail.copy(title = c.title, source = c.source)
+                    withContext(Dispatchers.Main) {
+                        _state.value = _state.value.copy(currentConv = conv)
+                    }
                 }
             }
             val local = graph.store.messages(c.id)
             withContext(Dispatchers.Main) {
                 _state.value = _state.value.copy(messages = local)
             }
-            // 拉远端历史
+            // 拉远端历史（用 conversation_id + before_limit，实测正确参数）
             val raw = runCatching { graph.api.fetchMessagesRaw(c.id) }.getOrNull()
             if (raw != null) {
                 val parsed = MessageParser.parse(c.id, raw)
@@ -214,7 +215,9 @@ class MainViewModel(private val graph: AppGraph) : ViewModel() {
             }
             withContext(Dispatchers.Main) {
                 if (graph.store.messages(c.id).isEmpty()) {
-                    _state.value = _state.value.copy(error = "历史消息加载失败")
+                    _state.value = _state.value.copy(
+                        error = if (raw == null) "历史消息请求失败" else "该会话暂无消息",
+                    )
                 }
             }
         }
@@ -222,8 +225,48 @@ class MainViewModel(private val graph: AppGraph) : ViewModel() {
 
     fun backToList() {
         stopSse()
-        _state.value = _state.value.copy(screen = Screen.LIST, currentConvId = "")
+        _state.value = _state.value.copy(
+            screen = Screen.LIST,
+            currentConvId = "",
+            currentConv = null,
+            messages = emptyList(),
+            error = "",
+        )
         loadConversations()
+    }
+
+    /**
+     * 统一的返回操作，供 BackHandler 与页面返回按钮共用。
+     * 返回 true 表示已消费（还有上一级），false 表示已在根页面（应退出 App）。
+     */
+    fun back(): Boolean {
+        return when (_state.value.screen) {
+            Screen.LIST -> false
+            Screen.PAIR -> false
+            Screen.MODELS -> {
+                val s = _state.value
+                _state.value = s.copy(
+                    screen = if (s.currentConvId.isBlank()) Screen.LIST else Screen.INPUT,
+                )
+                true
+            }
+            Screen.APPROVAL -> {
+                decide(false)
+                true
+            }
+            Screen.TASK -> {
+                _state.value = _state.value.copy(screen = Screen.CHAT)
+                true
+            }
+            Screen.INPUT -> {
+                _state.value = _state.value.copy(screen = Screen.CHAT)
+                true
+            }
+            Screen.CHAT -> {
+                backToList()
+                true
+            }
+        }
     }
 
     fun openInput() { _state.value = _state.value.copy(screen = Screen.INPUT) }
@@ -267,11 +310,20 @@ class MainViewModel(private val graph: AppGraph) : ViewModel() {
         val model = _state.value.selectedModel
         viewModelScope.launch(Dispatchers.IO) {
             graph.store.upsertMessages(listOf(localMsg))
-            // 云端会话先走 remote 详情补齐，本地会话直接 createTask
-            val target = conv ?: graph.api.conversationDetail(convId)
+            // 补齐 cli_id / project_id / workspace —— tasks/create 的必填字段
+            var target = conv
+            if (target == null || target.cliId.isBlank() || target.projectId.isBlank()) {
+                target = graph.api.conversationDetail(convId) ?: target
+            }
             if (target == null) {
                 withContext(Dispatchers.Main) {
-                    _state.value = _state.value.copy(error = "会话信息缺失，无法发送")
+                    _state.value = _state.value.copy(error = "会话不存在")
+                }
+                return@launch
+            }
+            if (target.cliId.isBlank()) {
+                withContext(Dispatchers.Main) {
+                    _state.value = _state.value.copy(error = "缺少 cli_id，无法发送")
                 }
                 return@launch
             }

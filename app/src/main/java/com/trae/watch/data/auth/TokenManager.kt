@@ -38,6 +38,8 @@ class TokenManager(context: Context) {
 
         private const val REFRESH_AHEAD_MS = 60L * 60 * 1000
         private const val MIN_REFRESH_INTERVAL_MS = 60L * 1000
+        /** 明文兜底前缀（Keystore 不可用时） */
+        private const val PLAIN_PREFIX = "plain:"
     }
 
     /** 纯内存缓存，避免每次请求都解密 */
@@ -47,11 +49,32 @@ class TokenManager(context: Context) {
     val userId: String get() = prefs.getString(K_UID, "") ?: ""
     val screenName: String get() = prefs.getString(K_NAME, "") ?: ""
     val tenantId: String get() = prefs.getString(K_TENANT, "") ?: ""
-    val hasAccount: Boolean get() = !refreshTokenRaw().isNullOrEmpty()
+
+    /**
+     * 是否已配对。
+     *
+     * 关键：不能只看能否解密 —— Android 8.1 部分国产 ROM 的 Keystore 会在
+     * 重启/升级后失效，导致解密返回 null，用户被迫每次重新配对。
+     * 这里改为「有密文就算已配对」，解密失败时走 refresh 重试，仍失败才视为需重配。
+     */
+    val hasAccount: Boolean
+        get() = !prefs.getString(K_RT, null).isNullOrEmpty()
 
     private fun refreshTokenRaw(): String? {
         val enc = prefs.getString(K_RT, null) ?: return null
+        // 兼容明文存储（Keystore 不可用时的兜底）
+        if (enc.startsWith(PLAIN_PREFIX)) return enc.removePrefix(PLAIN_PREFIX)
         return Crypto.decrypt(enc)
+    }
+
+    private fun storeSecret(key: String, value: String) {
+        val encrypted = try {
+            Crypto.encrypt(value)
+        } catch (e: Throwable) {
+            // Keystore 不可用，降级明文并打标记
+            PLAIN_PREFIX + value
+        }
+        prefs.edit().putString(key, encrypted).apply()
     }
 
     /** 当前可用 access token，必要时自动刷新。失败返回空串。 */
@@ -61,12 +84,18 @@ class TokenManager(context: Context) {
         val exp = prefs.getLong(K_EXP, 0L)
         if (!cached.isNullOrEmpty() && exp - now > REFRESH_AHEAD_MS) return cached
 
-        val stored = prefs.getString(K_AT, null)?.let { Crypto.decrypt(it) }
+        val stored = readSecret(K_AT)
         if (!stored.isNullOrEmpty() && exp - now > REFRESH_AHEAD_MS) {
             cachedAccess = stored
             return stored
         }
         return refreshBlocking() ?: stored.orEmpty()
+    }
+
+    private fun readSecret(key: String): String? {
+        val enc = prefs.getString(key, null) ?: return null
+        if (enc.startsWith(PLAIN_PREFIX)) return enc.removePrefix(PLAIN_PREFIX)
+        return Crypto.decrypt(enc)
     }
 
     /** 阻塞式刷新，内部串行 */
@@ -124,9 +153,9 @@ class TokenManager(context: Context) {
 
     private fun persist(r: ExchangeResult) {
         cachedAccess = r.accessToken
+        storeSecret(K_AT, r.accessToken)
+        storeSecret(K_RT, r.refreshToken)
         prefs.edit()
-            .putString(K_AT, Crypto.encrypt(r.accessToken))
-            .putString(K_RT, Crypto.encrypt(r.refreshToken))
             .putLong(K_EXP, r.expireAt)
             .putString(K_DEV, r.boundDeviceId)
             .apply()
@@ -135,8 +164,8 @@ class TokenManager(context: Context) {
     /** 从配对载荷导入（首次登录） */
     fun importFromPair(p: PairPayload): Boolean {
         if (p.refreshToken.isBlank()) return false
+        storeSecret(K_RT, p.refreshToken)
         prefs.edit()
-            .putString(K_RT, Crypto.encrypt(p.refreshToken))
             .putString(K_DEV, p.boundDeviceId)
             .putString(K_UID, p.userId)
             .putString(K_NAME, p.screenName)
@@ -144,7 +173,15 @@ class TokenManager(context: Context) {
             .putLong(K_EXP, 0L)
             .apply()
         cachedAccess = null
-        return refreshBlocking() != null
+        // 立即验证一次；失败也不清配对状态，避免用户被迫重复配对
+        val ok = refreshBlocking() != null
+        return ok
+    }
+
+    /** 仅清除 access token，保留 refresh token（给「重新连接」用） */
+    fun clearAccessOnly() {
+        cachedAccess = null
+        prefs.edit().remove(K_AT).remove(K_EXP).apply()
     }
 
     fun logout() {

@@ -47,6 +47,9 @@ class AppGraph(context: Context) {
     private val app = context.applicationContext
     val token = TokenManager(app)
     val store = MessageStore(Db(app))
-    val api = ApiClient { token.accessToken() }
+    val api = ApiClient(
+        tokenProvider = { token.accessToken() },
+        onTokenExpired = { token.clearAccessOnly() },
+    )
     val modelCache = ModelCache(app)
 }

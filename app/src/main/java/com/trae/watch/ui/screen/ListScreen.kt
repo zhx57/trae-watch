@@ -1,5 +1,6 @@
 package com.trae.watch.ui.screen
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -134,12 +135,12 @@ fun ListScreen(
                     modifier = Modifier.fillMaxSize(),
                     contentPadding = PaddingValues(vertical = 4.dp),
                 ) {
-                    items(conversations, key = { "${it.source}-${it.id}" }) { conv ->
+                    items(
+                        items = conversations,
+                        key = { "${it.source}-${it.id}" },
+                        contentType = { it.source },
+                    ) { conv ->
                         ConvListItem(conv) { onOpen(conv) }
-                        HorizontalDivider(
-                            modifier = Modifier.padding(start = 72.dp),
-                            color = MaterialTheme.colorScheme.outlineVariant,
-                        )
                     }
                 }
             }
@@ -147,12 +148,14 @@ fun ListScreen(
     }
 }
 
-/** 官方 ListItem：leadingContent / headlineContent / supportingContent / trailingContent */
+/** 官方 ListItem：点击必须显式加 clickable，否则整行无响应 */
 @Composable
 private fun ConvListItem(conv: ConvItem, onClick: () -> Unit) {
     val cs = MaterialTheme.colorScheme
     ListItem(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick),
         colors = ListItemDefaults.colors(containerColor = cs.surface),
         leadingContent = {
             Surface(

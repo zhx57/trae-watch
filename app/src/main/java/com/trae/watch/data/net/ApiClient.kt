@@ -28,7 +28,11 @@ data class ConvItem(
 
 data class ModelItem(val name: String, val displayName: String, val isDefault: Boolean)
 
-class ApiClient(private val tokenProvider: () -> String) {
+class ApiClient(
+    private val tokenProvider: () -> String,
+    /** token 失效时回调，用于清缓存并强制重取 */
+    private val onTokenExpired: () -> Unit = {},
+) {
 
     private val json = Json { ignoreUnknownKeys = true; isLenient = true }
     private val jsonMedia = "application/json; charset=utf-8".toMediaType()
@@ -52,6 +56,8 @@ class ApiClient(private val tokenProvider: () -> String) {
         Http.headers(token).forEach { (k, v) -> b.header(k, v) }
         return try {
             Http.client.newCall(b.build()).execute().use { r ->
+                // 401/403 说明 access token 失效，通知上层清缓存
+                if (r.code == 401 || r.code == 403) onTokenExpired()
                 Result(r.code, r.body?.string() ?: "", r.isSuccessful)
             }
         } catch (e: IOException) {
