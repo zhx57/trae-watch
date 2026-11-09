@@ -18,15 +18,40 @@ android {
         resourceConfigurations += listOf("zh", "en")
     }
 
+    /**
+     * 固定签名：CI 从环境变量注入 keystore，本地从 _signing/release.p12 读取。
+     * 保证每次构建签名一致，可覆盖安装升级。
+     */
+    signingConfigs {
+        create("release") {
+            val storePath = System.getenv("SIGNING_STORE_FILE")
+                ?: "${rootDir}/_signing/release.p12"
+            val storePwd = System.getenv("SIGNING_STORE_PASSWORD") ?: "TraeWatch2026!Sign"
+            val keyAliasEnv = System.getenv("SIGNING_KEY_ALIAS") ?: "trae-watch"
+            val keyPwd = System.getenv("SIGNING_KEY_PASSWORD") ?: storePwd
+
+            storeFile = file(storePath)
+            storePassword = storePwd
+            keyAlias = keyAliasEnv
+            keyPassword = keyPwd
+
+            // PKCS12 统一用 store password 作为 key password
+            enableV1Signing = true
+            enableV2Signing = true
+            enableV3Signing = true
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.getByName("release")
         }
         debug {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("release")
         }
     }
 

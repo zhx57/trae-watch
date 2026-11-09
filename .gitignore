@@ -8,3 +8,9 @@
 .externalNativeBuild
 .cxx
 local.properties
+
+# 签名密钥绝不入库
+_signing/*.p12
+_signing/*.b64
+_signing/*.jks
+_signing/*.keystore

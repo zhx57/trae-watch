@@ -23,8 +23,38 @@ jobs:
         with:
           gradle-version: '8.7'
 
+      # 固定签名：从 Secret 还原 keystore，保证每次构建签名一致
+      - name: Restore signing keystore
+        env:
+          KEYSTORE_B64: ${{ secrets.SIGNING_KEYSTORE_BASE64 }}
+          KEYSTORE_PWD: ${{ secrets.SIGNING_STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
+        run: |
+          mkdir -p _signing
+          if [ -n "$KEYSTORE_B64" ]; then
+            echo "$KEYSTORE_B64" | base64 -d > _signing/release.p12
+            echo "keystore restored from secret"
+          elif [ -f _signing/release.p12 ]; then
+            echo "using committed keystore"
+          else
+            echo "::error::no keystore available"
+            exit 1
+          fi
+          ls -l _signing/
+
       - name: Build release APK
+        env:
+          SIGNING_STORE_FILE: ${{ github.workspace }}/_signing/release.p12
+          SIGNING_STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
+          SIGNING_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
+          SIGNING_KEY_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
         run: gradle :app:assembleRelease --no-daemon --stacktrace
+
+      - name: Verify signature fingerprint
+        run: |
+          APK=$(find app/build/outputs/apk/release -name "*.apk" | head -1)
+          echo "APK: $APK"
+          keytool -printcert -jarfile "$APK" | grep -E "Owner|SHA256" || true
 
       - name: Rename APK
         run: |
