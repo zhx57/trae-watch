@@ -24,9 +24,9 @@ import androidx.compose.ui.unit.dp
 import com.trae.watch.data.db.Message
 import com.trae.watch.ui.component.EmptyHint
 import com.trae.watch.ui.component.ScreenHeader
-import com.trae.watch.ui.component.TraeButton
+import com.trae.watch.ui.component.M3eButton
 import com.trae.watch.ui.component.WatchScreen
-import com.trae.watch.ui.theme.TraeTheme
+import com.trae.watch.ui.theme.M3e
 
 /** 会话详情：只渲染文本块与工具摘要 */
 @Composable
@@ -39,9 +39,9 @@ fun ChatScreen(
     onInput: () -> Unit,
     onTask: () -> Unit,
 ) {
-    val c = TraeTheme.colors
-    val d = TraeTheme.dimens
-    val t = TraeTheme.type
+    val c = M3e.color
+    val d = M3e.dimen
+    val t = M3e.type
     val listState = rememberLazyListState()
 
     WatchScreen { scale ->
@@ -64,8 +64,8 @@ fun ChatScreen(
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth()
-                    .padding(horizontal = d.padScreen),
-                verticalArrangement = Arrangement.spacedBy(d.gapS),
+                    .padding(horizontal = d.pad),
+                verticalArrangement = Arrangement.spacedBy(d.s),
             ) {
                 items(messages, key = { it.id }) { m -> MessageBubble(m, scale) }
             }
@@ -78,16 +78,16 @@ fun ChatScreen(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = d.padScreen, vertical = d.gapM),
-            horizontalArrangement = Arrangement.spacedBy(d.gapS),
+                .padding(horizontal = d.pad, vertical = d.m),
+            horizontalArrangement = Arrangement.spacedBy(d.s),
         ) {
-            TraeButton(text = "输入", modifier = Modifier.weight(1f), onClick = onInput)
+            M3eButton(text = "输入", modifier = Modifier.weight(1f), onClick = onInput)
             if (running) {
-                TraeButton(
+                M3eButton(
                     text = "任务",
                     modifier = Modifier.weight(1f),
-                    color = c.surfaceHigh,
-                    contentColor = c.textPrimary,
+                    color = c.surfaceContainerHigh,
+                    contentColor = c.onSurface,
                     onClick = onTask,
                 )
             }
@@ -97,13 +97,13 @@ fun ChatScreen(
 
 @Composable
 private fun MessageBubble(m: Message, scale: Float) {
-    val c = TraeTheme.colors
-    val d = TraeTheme.dimens
-    val t = TraeTheme.type
+    val c = M3e.color
+    val d = M3e.dimen
+    val t = M3e.type
     val isUser = m.role == "user"
 
     val bg = when (m.type) {
-        "tool" -> c.surfaceHigh
+        "tool" -> c.surfaceContainerHigh
         "error" -> c.danger.copy(alpha = 0.15f)
         "plan" -> c.surface
         else -> if (isUser) c.primary.copy(alpha = 0.14f) else c.surface
@@ -111,7 +111,7 @@ private fun MessageBubble(m: Message, scale: Float) {
     val fg = when (m.type) {
         "error" -> c.danger
         "tool" -> c.primary
-        else -> c.textPrimary
+        else -> c.onSurface
     }
 
     Column(
@@ -119,11 +119,11 @@ private fun MessageBubble(m: Message, scale: Float) {
             .fillMaxWidth()
             .clip(RoundedCornerShape(if (isUser) (18 * scale).dp else (16 * scale).dp))
             .background(bg)
-            .padding(horizontal = d.gapM, vertical = d.gapS),
+            .padding(horizontal = d.m, vertical = d.s),
     ) {
         when (m.type) {
             "tool" -> {
-                Text("工具", color = c.textMuted, style = t.caption)
+                Text("工具", color = c.outline, style = t.caption)
                 Text(
                     text = m.text,
                     color = fg,
@@ -133,10 +133,10 @@ private fun MessageBubble(m: Message, scale: Float) {
                 )
             }
             "plan" -> {
-                Text("计划", color = c.textMuted, style = t.caption)
+                Text("计划", color = c.outline, style = t.caption)
                 Text(
                     text = m.text,
-                    color = c.textSecondary,
+                    color = c.onSurfaceVariant,
                     style = t.bodySmall,
                     maxLines = 3,
                     overflow = TextOverflow.Ellipsis,
@@ -156,3 +156,6 @@ private fun MessageBubble(m: Message, scale: Float) {
         }
     }
 }
+
+
+

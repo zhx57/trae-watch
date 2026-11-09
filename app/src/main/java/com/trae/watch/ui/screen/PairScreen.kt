@@ -30,7 +30,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.text.KeyboardOptions
 import com.trae.watch.ui.component.WatchScreen
-import com.trae.watch.ui.theme.TraeTheme
+import com.trae.watch.ui.theme.M3e
 
 /**
  * 配对页：6 位码（主）/ 粘贴载荷（备）。
@@ -44,9 +44,9 @@ fun PairScreen(
     onPair: (host: String, port: String, code: String) -> Unit,
     onPastePayload: (String) -> Unit,
 ) {
-    val c = TraeTheme.colors
-    val d = TraeTheme.dimens
-    val t = TraeTheme.type
+    val c = M3e.color
+    val d = M3e.dimen
+    val t = M3e.type
 
     var host by remember { mutableStateOf("192.168.1.100") }
     var port by remember { mutableStateOf("8080") }
@@ -58,65 +58,65 @@ fun PairScreen(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = d.padScreen, vertical = d.gapL)
+                .padding(horizontal = d.pad, vertical = d.l)
                 .verticalScroll(rememberScrollState()),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            Text("连接 Trae", color = c.textPrimary, style = t.title)
-            Spacer(Modifier.height(d.gapXs))
+            Text("连接 Trae", color = c.onSurface, style = t.title)
+            Spacer(Modifier.height(d.xs))
             Text(
                 text = if (mode == 0) "在电脑上运行 pair.py 获取配对码" else "粘贴配对载荷",
-                color = c.textSecondary,
+                color = c.onSurfaceVariant,
                 style = t.caption,
                 textAlign = TextAlign.Center,
             )
-            Spacer(Modifier.height(d.gapM))
+            Spacer(Modifier.height(d.m))
 
-            Row(horizontalArrangement = Arrangement.spacedBy(d.gapS)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(d.s)) {
                 TabChip("配对码", mode == 0, Modifier.weight(1f)) { mode = 0 }
                 TabChip("载荷", mode == 1, Modifier.weight(1f)) { mode = 1 }
             }
-            Spacer(Modifier.height(d.gapM))
+            Spacer(Modifier.height(d.m))
 
             if (mode == 0) {
                 Field(host, { host = it }, "电脑 IP", 15, KeyboardType.Text, scale)
-                Spacer(Modifier.height(d.gapS))
+                Spacer(Modifier.height(d.s))
                 Field(port, { port = it }, "端口", 5, KeyboardType.Number, scale)
-                Spacer(Modifier.height(d.gapS))
+                Spacer(Modifier.height(d.s))
                 Field(code, { if (it.length <= 6) code = it.filter { ch -> ch.isDigit() } }, "6 位码", 6, KeyboardType.Number, scale)
             } else {
                 OutlinedTextField(
                     value = payload,
                     onValueChange = { payload = it },
                     modifier = Modifier.fillMaxWidth(),
-                    placeholder = { Text("TRAE1:...", style = t.caption, color = c.textMuted) },
-                    textStyle = t.caption.copy(color = c.textPrimary),
+                    placeholder = { Text("TRAE1:...", style = t.caption, color = c.outline) },
+                    textStyle = t.caption.copy(color = c.onSurface),
                     maxLines = 3,
-                    shape = RoundedCornerShape(d.cardRadius),
+                    shape = RoundedCornerShape(d.squircle),
                     colors = TextFieldDefaults.colors(
                         focusedContainerColor = c.surface,
                         unfocusedContainerColor = c.surface,
                         focusedIndicatorColor = c.primary,
-                        unfocusedIndicatorColor = c.divider,
+                        unfocusedIndicatorColor = c.outlineVariant,
                         cursorColor = c.primary,
                     ),
                 )
             }
 
             if (error.isNotBlank()) {
-                Spacer(Modifier.height(d.gapS))
+                Spacer(Modifier.height(d.s))
                 Text(error, color = c.danger, style = t.caption)
             }
 
-            Spacer(Modifier.height(d.gapM))
+            Spacer(Modifier.height(d.m))
 
             val enabled = !pairing && (if (mode == 0) code.length == 6 else payload.isNotBlank())
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .heightIn(min = d.touchMin)
-                    .clip(RoundedCornerShape(d.buttonRadius))
-                    .background(if (enabled) c.primary else c.surfaceHigh)
+                    .heightIn(min = d.touch)
+                    .clip(RoundedCornerShape(d.touch / 2))
+                    .background(if (enabled) c.primary else c.surfaceContainerHigh)
                     .clickable(enabled = enabled) {
                         if (mode == 0) onPair(host.trim(), port.trim(), code) else onPastePayload(payload)
                     },
@@ -124,7 +124,7 @@ fun PairScreen(
             ) {
                 Text(
                     text = if (pairing) "连接中…" else "连接",
-                    color = if (enabled) c.onPrimary else c.textMuted,
+                    color = if (enabled) c.onPrimary else c.outline,
                     style = t.label,
                 )
             }
@@ -141,22 +141,22 @@ private fun Field(
     kb: KeyboardType,
     scale: Float,
 ) {
-    val c = TraeTheme.colors
-    val d = TraeTheme.dimens
+    val c = M3e.color
+    val d = M3e.dimen
     OutlinedTextField(
         value = value,
         onValueChange = { if (it.length <= maxLen) onChange(it) },
         modifier = Modifier.fillMaxWidth(),
-        placeholder = { Text(placeholder, style = TraeTheme.type.caption, color = c.textMuted) },
-        textStyle = TraeTheme.type.body.copy(color = c.textPrimary),
+        placeholder = { Text(placeholder, style = M3e.type.caption, color = c.outline) },
+        textStyle = M3e.type.body.copy(color = c.onSurface),
         singleLine = true,
-        shape = RoundedCornerShape(d.cardRadius),
+        shape = RoundedCornerShape(d.squircle),
         keyboardOptions = KeyboardOptions(keyboardType = kb),
         colors = TextFieldDefaults.colors(
             focusedContainerColor = c.surface,
             unfocusedContainerColor = c.surface,
             focusedIndicatorColor = c.primary,
-            unfocusedIndicatorColor = c.divider,
+            unfocusedIndicatorColor = c.outlineVariant,
             cursorColor = c.primary,
         ),
     )
@@ -164,20 +164,23 @@ private fun Field(
 
 @Composable
 private fun TabChip(text: String, active: Boolean, modifier: Modifier, onClick: () -> Unit) {
-    val c = TraeTheme.colors
-    val d = TraeTheme.dimens
+    val c = M3e.color
+    val d = M3e.dimen
     Box(
         modifier = modifier
             .heightIn(min = (40 * 1).dp)
-            .clip(RoundedCornerShape(d.buttonRadius))
+            .clip(RoundedCornerShape(d.touch / 2))
             .background(if (active) c.primary.copy(alpha = 0.18f) else c.surface)
             .clickable { onClick() },
         contentAlignment = Alignment.Center,
     ) {
         Text(
             text = text,
-            color = if (active) c.primary else c.textSecondary,
-            style = TraeTheme.type.caption,
+            color = if (active) c.primary else c.onSurfaceVariant,
+            style = M3e.type.caption,
         )
     }
 }
+
+
+

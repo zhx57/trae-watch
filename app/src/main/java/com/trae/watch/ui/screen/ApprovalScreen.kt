@@ -28,7 +28,7 @@ import androidx.compose.ui.unit.dp
 import com.trae.watch.vm.Approval
 import com.trae.watch.ui.component.ScreenHeader
 import com.trae.watch.ui.component.WatchScreen
-import com.trae.watch.ui.theme.TraeTheme
+import com.trae.watch.ui.theme.M3e
 
 /**
  * 审批页：工具名 + 一行摘要 + 同意/拒绝大按钮。
@@ -41,9 +41,9 @@ fun ApprovalScreen(
     onReject: () -> Unit,
     onBack: () -> Unit,
 ) {
-    val c = TraeTheme.colors
-    val d = TraeTheme.dimens
-    val t = TraeTheme.type
+    val c = M3e.color
+    val d = M3e.dimen
+    val t = M3e.type
     var expanded by remember { mutableStateOf(false) }
 
     WatchScreen { scale ->
@@ -58,7 +58,7 @@ fun ApprovalScreen(
             modifier = Modifier
                 .weight(1f)
                 .fillMaxWidth()
-                .padding(horizontal = d.padScreen)
+                .padding(horizontal = d.pad)
                 .verticalScroll(rememberScrollState()),
         ) {
             Text(
@@ -68,39 +68,39 @@ fun ApprovalScreen(
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
             )
-            Spacer(Modifier.height(d.gapS))
+            Spacer(Modifier.height(d.s))
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(d.cardRadius))
+                    .clip(RoundedCornerShape(d.squircle))
                     .background(c.surface)
                     .clickable { expanded = !expanded }
-                    .padding(d.gapM),
+                    .padding(d.m),
             ) {
                 Text(
                     text = if (expanded) approval.fullText else approval.summary,
-                    color = c.textSecondary,
+                    color = c.onSurfaceVariant,
                     style = t.bodySmall,
                     maxLines = if (expanded) 40 else 2,
                     overflow = TextOverflow.Ellipsis,
                 )
             }
             if (!expanded) {
-                Spacer(Modifier.height(d.gapXs))
-                Text("点击展开全文", color = c.textMuted, style = t.caption)
+                Spacer(Modifier.height(d.xs))
+                Text("点击展开全文", color = c.outline, style = t.caption)
             }
         }
 
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = d.padScreen, vertical = d.gapM),
-            horizontalArrangement = Arrangement.spacedBy(d.gapS),
+                .padding(horizontal = d.pad, vertical = d.m),
+            horizontalArrangement = Arrangement.spacedBy(d.s),
         ) {
             BigAction(
                 text = "拒绝",
                 modifier = Modifier.weight(1f),
-                bg = c.surfaceHigh,
+                bg = c.surfaceContainerHigh,
                 fg = c.danger,
                 onClick = onReject,
             )
@@ -123,15 +123,18 @@ private fun BigAction(
     fg: androidx.compose.ui.graphics.Color,
     onClick: () -> Unit,
 ) {
-    val d = TraeTheme.dimens
+    val d = M3e.dimen
     Box(
         modifier = modifier
             .heightIn(min = (56 * 1).dp)
-            .clip(RoundedCornerShape(d.buttonRadius))
+            .clip(RoundedCornerShape(d.touch / 2))
             .background(bg)
             .clickable { onClick() },
         contentAlignment = Alignment.Center,
     ) {
-        Text(text = text, color = fg, style = TraeTheme.type.label)
+        Text(text = text, color = fg, style = M3e.type.label)
     }
 }
+
+
+

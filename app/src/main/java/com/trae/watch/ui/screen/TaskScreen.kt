@@ -28,7 +28,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.trae.watch.ui.component.ScreenHeader
 import com.trae.watch.ui.component.WatchScreen
-import com.trae.watch.ui.theme.TraeTheme
+import com.trae.watch.ui.theme.M3e
 import kotlinx.coroutines.delay
 
 /** 任务状态：运行时长 + 当前步骤 + 取消 */
@@ -41,9 +41,9 @@ fun TaskScreen(
     onCancel: () -> Unit,
     onBack: () -> Unit,
 ) {
-    val c = TraeTheme.colors
-    val d = TraeTheme.dimens
-    val t = TraeTheme.type
+    val c = M3e.color
+    val d = M3e.dimen
+    val t = M3e.type
     var elapsed by remember { mutableLongStateOf(0L) }
 
     LaunchedEffect(startedAt, running) {
@@ -57,10 +57,10 @@ fun TaskScreen(
         ScreenHeader(title = "任务", subtitle = if (running) "运行中" else "已结束", onBack = onBack, scale = scale)
 
         Column(
-            modifier = Modifier.weight(1f).fillMaxWidth().padding(horizontal = d.padScreen),
+            modifier = Modifier.weight(1f).fillMaxWidth().padding(horizontal = d.pad),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            Spacer(Modifier.height(d.gapL))
+            Spacer(Modifier.height(d.l))
             Box(
                 modifier = Modifier
                     .size((84 * scale).dp)
@@ -70,37 +70,37 @@ fun TaskScreen(
             ) {
                 Text(
                     text = formatDuration(elapsed),
-                    color = if (running) c.primary else c.textMuted,
+                    color = if (running) c.primary else c.outline,
                     style = t.title,
                 )
             }
-            Spacer(Modifier.height(d.gapM))
+            Spacer(Modifier.height(d.m))
             Text(
                 text = stepText.ifBlank { if (running) "等待 Agent 响应" else "无进行中的任务" },
-                color = c.textSecondary,
+                color = c.onSurfaceVariant,
                 style = t.bodySmall,
                 textAlign = TextAlign.Center,
                 maxLines = 3,
             )
             if (taskId.isNotBlank()) {
-                Spacer(Modifier.height(d.gapXs))
-                Text("ID " + taskId.take(12), color = c.textMuted, style = t.caption)
+                Spacer(Modifier.height(d.xs))
+                Text("ID " + taskId.take(12), color = c.outline, style = t.caption)
             }
         }
 
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = d.padScreen, vertical = d.gapM)
-                .heightIn(min = d.touchMin)
-                .clip(RoundedCornerShape(d.buttonRadius))
-                .background(if (running) c.danger.copy(alpha = 0.18f) else c.surfaceHigh)
+                .padding(horizontal = d.pad, vertical = d.m)
+                .heightIn(min = d.touch)
+                .clip(RoundedCornerShape(d.touch / 2))
+                .background(if (running) c.danger.copy(alpha = 0.18f) else c.surfaceContainerHigh)
                 .clickable(enabled = running) { onCancel() },
             contentAlignment = Alignment.Center,
         ) {
             Text(
                 text = if (running) "取消任务" else "已结束",
-                color = if (running) c.danger else c.textMuted,
+                color = if (running) c.danger else c.outline,
                 style = t.label,
             )
         }
@@ -113,3 +113,6 @@ private fun formatDuration(ms: Long): String {
     val s = total % 60
     return if (m > 0) "${m}m ${s}s" else "${s}s"
 }
+
+
+

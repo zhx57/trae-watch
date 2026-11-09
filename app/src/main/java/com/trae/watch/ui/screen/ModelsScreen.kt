@@ -25,9 +25,9 @@ import androidx.compose.ui.unit.dp
 import com.trae.watch.data.net.ModelItem
 import com.trae.watch.ui.component.EmptyHint
 import com.trae.watch.ui.component.ScreenHeader
-import com.trae.watch.ui.component.TraeButton
+import com.trae.watch.ui.component.M3eButton
 import com.trae.watch.ui.component.WatchScreen
-import com.trae.watch.ui.theme.TraeTheme
+import com.trae.watch.ui.theme.M3e
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -50,9 +50,9 @@ fun ModelsScreen(
     onRefresh: () -> Unit,
     onBack: () -> Unit,
 ) {
-    val c = TraeTheme.colors
-    val d = TraeTheme.dimens
-    val t = TraeTheme.type
+    val c = M3e.color
+    val d = M3e.dimen
+    val t = M3e.type
 
     WatchScreen { scale ->
         ScreenHeader(
@@ -85,8 +85,8 @@ fun ModelsScreen(
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth()
-                    .padding(horizontal = d.padScreen),
-                verticalArrangement = Arrangement.spacedBy(d.gapXs),
+                    .padding(horizontal = d.pad),
+                verticalArrangement = Arrangement.spacedBy(d.xs),
             ) {
                 items(models, key = { it.name }) { m ->
                     val active = m.name == selected
@@ -94,10 +94,10 @@ fun ModelsScreen(
                         modifier = Modifier
                             .fillMaxWidth()
                             .heightIn(min = (50 * scale).dp)
-                            .clip(RoundedCornerShape(d.cardRadius))
+                            .clip(RoundedCornerShape(d.squircle))
                             .background(if (active) c.primary.copy(alpha = 0.16f) else c.surface)
                             .clickable { onSelect(m.name) }
-                            .padding(horizontal = d.gapM),
+                            .padding(horizontal = d.m),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Box(
@@ -105,35 +105,35 @@ fun ModelsScreen(
                                 .width((3 * scale).dp)
                                 .heightIn(min = (18 * scale).dp)
                                 .clip(CircleShape)
-                                .background(if (active) c.primary else c.surfaceHigh),
+                                .background(if (active) c.primary else c.surfaceContainerHigh),
                         )
-                        Spacer(Modifier.width(d.gapS))
+                        Spacer(Modifier.width(d.s))
                         Text(
                             text = m.displayName,
-                            color = if (active) c.primary else c.textPrimary,
+                            color = if (active) c.primary else c.onSurface,
                             style = t.label,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.weight(1f),
                         )
                         if (m.isDefault) {
-                            Text("默认", color = c.textMuted, style = t.caption)
+                            Text("默认", color = c.outline, style = t.caption)
                         }
                         if (active) {
-                            Spacer(Modifier.width(d.gapXs))
+                            Spacer(Modifier.width(d.xs))
                             Text("✓", color = c.primary, style = t.label)
                         }
                     }
                 }
-                item { Spacer(Modifier.heightIn(min = d.gapS)) }
+                item { Spacer(Modifier.heightIn(min = d.s)) }
             }
         }
 
-        TraeButton(
+        M3eButton(
             text = if (loading) "刷新中" else "刷新列表",
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = d.padScreen, vertical = d.gapM),
+                .padding(horizontal = d.pad, vertical = d.m),
             enabled = !loading,
             onClick = onRefresh,
         )
@@ -149,3 +149,6 @@ private fun timeAgo(ts: Long): String {
         else -> SimpleDateFormat("MM-dd HH:mm", Locale.getDefault()).format(Date(ts))
     }
 }
+
+
+

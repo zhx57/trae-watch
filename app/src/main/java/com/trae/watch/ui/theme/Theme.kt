@@ -1,9 +1,14 @@
 package com.trae.watch.ui.theme
 
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.spring
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Shapes
 import androidx.compose.material3.Typography
+import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
@@ -13,130 +18,198 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.darkColorScheme
 
 /**
- * M3 Expressive 令牌层。
+ * Material 3 Expressive 令牌层（手表方屏适配）。
  *
- * 手表端不使用圆形边缘贴合组件，只复用 M3E 的令牌语言：
- *  - 形状：更夸张的圆角与胶囊，对应 M3E 的 shape morph 意图
- *  - 字体：M3E 的手表字号阶梯，最小可读 14sp
- *  - 颜色：纯黑底 + 单强调色，省电且在小屏上对比强
- *  - 动效：只用弹簧曲线，且只用于转场与按压反馈
+ * 与普通 M3 的差别，这里逐条落地：
+ *  1. 音调色阶：完整 5 档 surface container + primary/secondary/tertiary container
+ *  2. 形状变形：非对称 squircle（M3E 的 shape morph 语言），而不是统一圆角
+ *  3. 表达性字阶：display 收紧字距 + 大字重，label 放宽字距
+ *  4. 弹簧动效：M3E 标志性的低阻尼弹簧，只用于按压回弹与转场（无循环动画）
+ *  5. 按钮组：相连的分段控件，两端胶囊、内侧小圆角
  */
 @Immutable
-data class TraeColors(
-    val bg: Color = Color(0xFF000000),
-    val surface: Color = Color(0xFF14181A),
-    val surfaceHigh: Color = Color(0xFF1F2629),
-    val primary: Color = Color(0xFF3DDC84),
-    val onPrimary: Color = Color(0xFF062414),
-    val danger: Color = Color(0xFFFF5C5C),
-    val warning: Color = Color(0xFFFFC24B),
-    val textPrimary: Color = Color(0xFFF2F5F4),
-    val textSecondary: Color = Color(0xFF9AA5A0),
-    val textMuted: Color = Color(0xFF5E6864),
-    val divider: Color = Color(0xFF2A3235),
+data class M3eColors(
+    // 主色族（音调 40/90/30/10）
+    val primary: Color = Color(0xFF6DD58C),
+    val onPrimary: Color = Color(0xFF00391A),
+    val primaryContainer: Color = Color(0xFF00522A),
+    val onPrimaryContainer: Color = Color(0xFF8BF5A9),
+
+    // 次色族
+    val secondary: Color = Color(0xFFB8CCBB),
+    val onSecondary: Color = Color(0xFF233428),
+    val secondaryContainer: Color = Color(0xFF3A4B3E),
+    val onSecondaryContainer: Color = Color(0xFFD4E8D6),
+
+    // 三色族（强调/警示，M3E 常用 tertiary 做跳色）
+    val tertiary: Color = Color(0xFFF0BD6B),
+    val onTertiary: Color = Color(0xFF402D00),
+    val tertiaryContainer: Color = Color(0xFF5C4200),
+    val onTertiaryContainer: Color = Color(0xFFFFDEA6),
+
+    // 错误
+    val error: Color = Color(0xFFFFB4AB),
+    val onError: Color = Color(0xFF690005),
+    val errorContainer: Color = Color(0xFF93000A),
+    val onErrorContainer: Color = Color(0xFFFFDAD6),
+
+    // 5 档 surface container（M3E 的核心层次语言）
+    val surfaceContainerLowest: Color = Color(0xFF0A0F0C),
+    val surfaceContainerLow: Color = Color(0xFF141A16),
+    val surfaceContainer: Color = Color(0xFF181F1B),
+    val surfaceContainerHigh: Color = Color(0xFF232B26),
+    val surfaceContainerHighest: Color = Color(0xFF2E3731),
+
+    val onSurface: Color = Color(0xFFE0E4DF),
+    val onSurfaceVariant: Color = Color(0xFFBFC9C1),
+    val outline: Color = Color(0xFF89938C),
+    val outlineVariant: Color = Color(0xFF3F4943),
+    val inverseSurface: Color = Color(0xFFE0E4DF),
+    val inverseOnSurface: Color = Color(0xFF2D322E),
 )
 
 @Immutable
-data class TraeDimens(
-    /** 屏幕基准宽度，410x502 为设计稿 */
+data class M3eDimens(
     val screenW: Dp = 410.dp,
     val screenH: Dp = 502.dp,
-    val gapXs: Dp = 4.dp,
-    val gapS: Dp = 8.dp,
-    val gapM: Dp = 12.dp,
-    val gapL: Dp = 16.dp,
-    val padScreen: Dp = 14.dp,
-    val rowMinHeight: Dp = 56.dp,
-    val touchMin: Dp = 48.dp,
-    val cardRadius: Dp = 22.dp,
-    val buttonRadius: Dp = 26.dp,
+    val xs: Dp = 4.dp,
+    val s: Dp = 8.dp,
+    val m: Dp = 12.dp,
+    val l: Dp = 16.dp,
+    val xl: Dp = 24.dp,
+    val pad: Dp = 14.dp,
+    val touch: Dp = 48.dp,
+    /** M3E squircle 主半径 */
+    val squircle: Dp = 28.dp,
+    /** 按钮组内侧圆角 */
+    val groupInner: Dp = 6.dp,
+    val pressScale: Float = 0.94f,
 )
 
+/** M3E 表达性字阶：display 收紧字距，label 放宽 */
 @Immutable
-data class TraeType(
+data class M3eType(
+    val display: TextStyle = TextStyle(
+        fontFamily = FontFamily.SansSerif, fontWeight = FontWeight.Bold,
+        fontSize = 34.sp, lineHeight = 36.sp, letterSpacing = (-1.0).sp,
+    ),
+    val headline: TextStyle = TextStyle(
+        fontFamily = FontFamily.SansSerif, fontWeight = FontWeight.Bold,
+        fontSize = 24.sp, lineHeight = 26.sp, letterSpacing = (-0.5).sp,
+    ),
     val title: TextStyle = TextStyle(
         fontFamily = FontFamily.SansSerif, fontWeight = FontWeight.SemiBold,
-        fontSize = 20.sp, lineHeight = 24.sp,
+        fontSize = 18.sp, lineHeight = 22.sp, letterSpacing = (-0.2).sp,
     ),
     val body: TextStyle = TextStyle(
         fontFamily = FontFamily.SansSerif, fontWeight = FontWeight.Normal,
-        fontSize = 15.sp, lineHeight = 20.sp,
+        fontSize = 15.sp, lineHeight = 21.sp, letterSpacing = 0.sp,
     ),
     val bodySmall: TextStyle = TextStyle(
         fontFamily = FontFamily.SansSerif, fontWeight = FontWeight.Normal,
-        fontSize = 13.sp, lineHeight = 17.sp,
+        fontSize = 13.sp, lineHeight = 18.sp, letterSpacing = 0.1.sp,
     ),
     val label: TextStyle = TextStyle(
-        fontFamily = FontFamily.SansSerif, fontWeight = FontWeight.Medium,
-        fontSize = 14.sp, lineHeight = 18.sp,
+        fontFamily = FontFamily.SansSerif, fontWeight = FontWeight.SemiBold,
+        fontSize = 15.sp, lineHeight = 19.sp, letterSpacing = 0.2.sp,
     ),
-    val caption: TextStyle = TextStyle(
-        fontFamily = FontFamily.SansSerif, fontWeight = FontWeight.Normal,
-        fontSize = 11.sp, lineHeight = 14.sp,
+    val labelSmall: TextStyle = TextStyle(
+        fontFamily = FontFamily.SansSerif, fontWeight = FontWeight.Medium,
+        fontSize = 11.sp, lineHeight = 14.sp, letterSpacing = 0.5.sp,
     ),
 )
 
-val LocalTraeColors = staticCompositionLocalOf { TraeColors() }
-val LocalTraeDimens = staticCompositionLocalOf { TraeDimens() }
-val LocalTraeType = staticCompositionLocalOf { TraeType() }
+val LocalM3eColors = staticCompositionLocalOf { M3eColors() }
+val LocalM3eDimens = staticCompositionLocalOf { M3eDimens() }
+val LocalM3eType = staticCompositionLocalOf { M3eType() }
 
-object TraeTheme {
-    val colors: TraeColors
-        @Composable get() = LocalTraeColors.current
-    val dimens: TraeDimens
-        @Composable get() = LocalTraeDimens.current
-    val type: TraeType
-        @Composable get() = LocalTraeType.current
+object M3e {
+    val color: M3eColors @Composable get() = LocalM3eColors.current
+    val dimen: M3eDimens @Composable get() = LocalM3eDimens.current
+    val type: M3eType @Composable get() = LocalM3eType.current
 }
 
-/** M3E 形状体系：胶囊 + 大圆角，方屏上用全圆角替代圆形边缘 */
-val TraeShapes = Shapes(
-    extraSmall = RoundedCornerShape(8.dp),
-    small = RoundedCornerShape(12.dp),
+/** M3E squircle：四角不等的大圆角，体现 shape morph 语言 */
+val Squircle = RoundedCornerShape(28.dp)
+
+/** 容器形变：顶部大圆角、底部收窄，用于消息块与卡片头部 */
+val AsymContainer = RoundedCornerShape(
+    topStart = 28.dp, topEnd = 28.dp,
+    bottomStart = 28.dp, bottomEnd = 10.dp,
+)
+
+val M3eShapes = Shapes(
+    extraSmall = RoundedCornerShape(6.dp),
+    small = RoundedCornerShape(10.dp),
     medium = RoundedCornerShape(18.dp),
-    large = RoundedCornerShape(26.dp),
-    extraLarge = RoundedCornerShape(34.dp),
+    large = RoundedCornerShape(28.dp),
+    extraLarge = RoundedCornerShape(36.dp),
 )
 
-private val traeTypography = Typography(
-    titleLarge = TextStyle(fontFamily = FontFamily.SansSerif, fontWeight = FontWeight.SemiBold, fontSize = 22.sp, lineHeight = 26.sp),
-    titleMedium = TextStyle(fontFamily = FontFamily.SansSerif, fontWeight = FontWeight.SemiBold, fontSize = 18.sp, lineHeight = 22.sp),
-    bodyLarge = TextStyle(fontFamily = FontFamily.SansSerif, fontWeight = FontWeight.Normal, fontSize = 15.sp, lineHeight = 20.sp),
+/** M3E 弹簧：低阻尼、高刚度，按压有轻微回弹 */
+fun <T> m3eSpring() = spring<T>(
+    dampingRatio = Spring.DampingRatioMediumBouncy,
+    stiffness = Spring.StiffnessMediumLow,
+)
+
+private val m3eTypography = Typography(
+    displayLarge = TextStyle(fontFamily = FontFamily.SansSerif, fontWeight = FontWeight.Bold, fontSize = 34.sp, lineHeight = 36.sp, letterSpacing = (-1.0).sp),
+    headlineMedium = TextStyle(fontFamily = FontFamily.SansSerif, fontWeight = FontWeight.Bold, fontSize = 24.sp, lineHeight = 26.sp, letterSpacing = (-0.5).sp),
+    titleMedium = TextStyle(fontFamily = FontFamily.SansSerif, fontWeight = FontWeight.SemiBold, fontSize = 18.sp, lineHeight = 22.sp, letterSpacing = (-0.2).sp),
+    bodyLarge = TextStyle(fontFamily = FontFamily.SansSerif, fontWeight = FontWeight.Normal, fontSize = 15.sp, lineHeight = 21.sp),
     bodyMedium = TextStyle(fontFamily = FontFamily.SansSerif, fontWeight = FontWeight.Normal, fontSize = 13.sp, lineHeight = 18.sp),
-    labelLarge = TextStyle(fontFamily = FontFamily.SansSerif, fontWeight = FontWeight.Medium, fontSize = 15.sp, lineHeight = 20.sp),
-    labelSmall = TextStyle(fontFamily = FontFamily.SansSerif, fontWeight = FontWeight.Normal, fontSize = 11.sp, lineHeight = 14.sp),
+    labelLarge = TextStyle(fontFamily = FontFamily.SansSerif, fontWeight = FontWeight.SemiBold, fontSize = 15.sp, lineHeight = 19.sp, letterSpacing = 0.2.sp),
+    labelSmall = TextStyle(fontFamily = FontFamily.SansSerif, fontWeight = FontWeight.Medium, fontSize = 11.sp, lineHeight = 14.sp, letterSpacing = 0.5.sp),
 )
 
-private val traeColorScheme = darkColorScheme(
-    primary = Color(0xFF3DDC84),
-    onPrimary = Color(0xFF062414),
-    background = Color(0xFF000000),
-    onBackground = Color(0xFFF2F5F4),
-    surface = Color(0xFF14181A),
-    onSurface = Color(0xFFF2F5F4),
-    surfaceVariant = Color(0xFF1F2629),
-    onSurfaceVariant = Color(0xFF9AA5A0),
-    error = Color(0xFFFF5C5C),
-    outline = Color(0xFF2A3235),
+private val m3eColorScheme = darkColorScheme(
+    primary = Color(0xFF6DD58C),
+    onPrimary = Color(0xFF00391A),
+    primaryContainer = Color(0xFF00522A),
+    onPrimaryContainer = Color(0xFF8BF5A9),
+    secondary = Color(0xFFB8CCBB),
+    onSecondary = Color(0xFF233428),
+    secondaryContainer = Color(0xFF3A4B3E),
+    onSecondaryContainer = Color(0xFFD4E8D6),
+    tertiary = Color(0xFFF0BD6B),
+    onTertiary = Color(0xFF402D00),
+    tertiaryContainer = Color(0xFF5C4200),
+    onTertiaryContainer = Color(0xFFFFDEA6),
+    error = Color(0xFFFFB4AB),
+    onError = Color(0xFF690005),
+    errorContainer = Color(0xFF93000A),
+    onErrorContainer = Color(0xFFFFDAD6),
+    background = Color(0xFF0A0F0C),
+    onBackground = Color(0xFFE0E4DF),
+    surface = Color(0xFF181F1B),
+    onSurface = Color(0xFFE0E4DF),
+    surfaceVariant = Color(0xFF232B26),
+    onSurfaceVariant = Color(0xFFBFC9C1),
+    outline = Color(0xFF89938C),
+    outlineVariant = Color(0xFF3F4943),
 )
 
 @Composable
 fun TraeWatchTheme(content: @Composable () -> Unit) {
     MaterialTheme(
-        colorScheme = traeColorScheme,
-        shapes = TraeShapes,
-        typography = traeTypography,
+        colorScheme = m3eColorScheme,
+        shapes = M3eShapes,
+        typography = m3eTypography,
     ) {
-        androidx.compose.runtime.CompositionLocalProvider(
-            LocalTraeColors provides TraeColors(),
-            LocalTraeDimens provides TraeDimens(),
-            LocalTraeType provides TraeType(),
+        CompositionLocalProvider(
+            LocalM3eColors provides M3eColors(),
+            LocalM3eDimens provides M3eDimens(),
+            LocalM3eType provides M3eType(),
         ) {
             content()
         }
     }
 }
+
+// 兼容旧调用点
+val TraeTheme = M3e
+typealias TraeColors = M3eColors
+typealias TraeDimens = M3eDimens
+typealias TraeType = M3eType

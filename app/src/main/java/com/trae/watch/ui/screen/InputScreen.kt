@@ -31,7 +31,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.trae.watch.ui.component.ScreenHeader
 import com.trae.watch.ui.component.WatchScreen
-import com.trae.watch.ui.theme.TraeTheme
+import com.trae.watch.ui.theme.M3e
 
 /** 三档输入：预设短语 / 系统输入法 / 历史复用 */
 private val QUICK_PHRASES = listOf(
@@ -53,9 +53,9 @@ fun InputScreen(
     onPickModel: () -> Unit = {},
     onBack: () -> Unit,
 ) {
-    val c = TraeTheme.colors
-    val d = TraeTheme.dimens
-    val t = TraeTheme.type
+    val c = M3e.color
+    val d = M3e.dimen
+    val t = M3e.type
     var custom by remember { mutableStateOf("") }
     var showHistory by remember { mutableStateOf(false) }
 
@@ -71,12 +71,12 @@ fun InputScreen(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = d.padScreen)
+                .padding(horizontal = d.pad)
                 .heightIn(min = (36 * scale).dp)
-                .clip(RoundedCornerShape(d.cardRadius))
+                .clip(RoundedCornerShape(d.squircle))
                 .background(c.surface)
                 .clickable { onPickModel() }
-                .padding(horizontal = d.gapM),
+                .padding(horizontal = d.m),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
@@ -87,43 +87,43 @@ fun InputScreen(
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f),
             )
-            Text("切换", color = c.textMuted, style = t.caption)
+            Text("切换", color = c.outline, style = t.caption)
         }
-        Spacer(Modifier.height(d.gapXs))
+        Spacer(Modifier.height(d.xs))
 
         Column(
             modifier = Modifier
                 .weight(1f)
                 .fillMaxWidth()
-                .padding(horizontal = d.padScreen),
+                .padding(horizontal = d.pad),
         ) {
             if (!showHistory) {
                 LazyVerticalGrid(
                     columns = GridCells.Fixed(3),
-                    contentPadding = PaddingValues(vertical = d.gapXs),
-                    horizontalArrangement = Arrangement.spacedBy(d.gapS),
-                    verticalArrangement = Arrangement.spacedBy(d.gapS),
+                    contentPadding = PaddingValues(vertical = d.xs),
+                    horizontalArrangement = Arrangement.spacedBy(d.s),
+                    verticalArrangement = Arrangement.spacedBy(d.s),
                 ) {
                     items(QUICK_PHRASES) { p ->
                         PhraseChip(p, scale) { onSend(p) }
                     }
                 }
             } else {
-                Column(verticalArrangement = Arrangement.spacedBy(d.gapS)) {
+                Column(verticalArrangement = Arrangement.spacedBy(d.s)) {
                     RECENT_PHRASES.forEach { p ->
                         Box(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .heightIn(min = (48 * scale).dp)
-                                .clip(RoundedCornerShape(d.cardRadius))
+                                .clip(RoundedCornerShape(d.squircle))
                                 .background(c.surface)
                                 .clickable { onSend(p) }
-                                .padding(horizontal = d.gapM, vertical = d.gapS),
+                                .padding(horizontal = d.m, vertical = d.s),
                             contentAlignment = Alignment.CenterStart,
                         ) {
                             Text(
                                 text = p,
-                                color = c.textPrimary,
+                                color = c.onSurface,
                                 style = t.bodySmall,
                                 maxLines = 2,
                                 overflow = TextOverflow.Ellipsis,
@@ -133,22 +133,22 @@ fun InputScreen(
                 }
             }
 
-            Spacer(Modifier.height(d.gapS))
+            Spacer(Modifier.height(d.s))
 
             // 手输兜底
             OutlinedTextField(
                 value = custom,
                 onValueChange = { if (it.length <= 500) custom = it },
                 modifier = Modifier.fillMaxWidth(),
-                placeholder = { Text("输入文字…", style = t.bodySmall, color = c.textMuted) },
-                textStyle = t.bodySmall.copy(color = c.textPrimary),
+                placeholder = { Text("输入文字…", style = t.bodySmall, color = c.outline) },
+                textStyle = t.bodySmall.copy(color = c.onSurface),
                 maxLines = 2,
-                shape = RoundedCornerShape(d.cardRadius),
+                shape = RoundedCornerShape(d.squircle),
                 colors = TextFieldDefaults.colors(
                     focusedContainerColor = c.surface,
                     unfocusedContainerColor = c.surface,
                     focusedIndicatorColor = c.primary,
-                    unfocusedIndicatorColor = c.divider,
+                    unfocusedIndicatorColor = c.outlineVariant,
                     cursorColor = c.primary,
                 ),
             )
@@ -157,30 +157,30 @@ fun InputScreen(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = d.padScreen, vertical = d.gapM),
-            horizontalArrangement = Arrangement.spacedBy(d.gapS),
+                .padding(horizontal = d.pad, vertical = d.m),
+            horizontalArrangement = Arrangement.spacedBy(d.s),
         ) {
             Box(
                 modifier = Modifier
                     .weight(1f)
-                    .heightIn(min = d.touchMin)
-                    .clip(RoundedCornerShape(d.buttonRadius))
-                    .background(c.surfaceHigh)
+                    .heightIn(min = d.touch)
+                    .clip(RoundedCornerShape(d.touch / 2))
+                    .background(c.surfaceContainerHigh)
                     .clickable { showHistory = !showHistory },
                 contentAlignment = Alignment.Center,
             ) {
                 Text(
                     text = if (showHistory) "快捷" else "历史",
-                    color = c.textPrimary,
+                    color = c.onSurface,
                     style = t.label,
                 )
             }
             Box(
                 modifier = Modifier
                     .weight(2f)
-                    .heightIn(min = d.touchMin)
-                    .clip(RoundedCornerShape(d.buttonRadius))
-                    .background(if (custom.isBlank()) c.surfaceHigh else c.primary)
+                    .heightIn(min = d.touch)
+                    .clip(RoundedCornerShape(d.touch / 2))
+                    .background(if (custom.isBlank()) c.surfaceContainerHigh else c.primary)
                     .clickable(enabled = custom.isNotBlank()) {
                         onSend(custom.trim())
                         custom = ""
@@ -189,7 +189,7 @@ fun InputScreen(
             ) {
                 Text(
                     text = "发送",
-                    color = if (custom.isBlank()) c.textMuted else c.onPrimary,
+                    color = if (custom.isBlank()) c.outline else c.onPrimary,
                     style = t.label,
                 )
             }
@@ -199,24 +199,27 @@ fun InputScreen(
 
 @Composable
 private fun PhraseChip(text: String, scale: Float, onClick: () -> Unit) {
-    val c = TraeTheme.colors
-    val d = TraeTheme.dimens
+    val c = M3e.color
+    val d = M3e.dimen
     Box(
         modifier = Modifier
             .fillMaxWidth()
             .heightIn(min = (52 * scale).dp)
-            .clip(RoundedCornerShape(d.cardRadius))
+            .clip(RoundedCornerShape(d.squircle))
             .background(c.surface)
             .clickable { onClick() }
-            .padding(horizontal = d.gapXs, vertical = d.gapXs),
+            .padding(horizontal = d.xs, vertical = d.xs),
         contentAlignment = Alignment.Center,
     ) {
         Text(
             text = text,
-            color = c.textPrimary,
-            style = TraeTheme.type.bodySmall,
+            color = c.onSurface,
+            style = M3e.type.bodySmall,
             maxLines = 2,
             overflow = TextOverflow.Ellipsis,
         )
     }
 }
+
+
+
