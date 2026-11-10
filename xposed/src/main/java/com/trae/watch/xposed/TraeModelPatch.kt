@@ -343,7 +343,7 @@ class TraeModelPatch : IXposedHookLoadPackage {
         //      hook 在它调用 super 之前，把 night 位补回去。
         runCatching {
             XposedHelpers.findAndHookMethod(
-                android.content.ContextThemeWrapper::class.java,
+                android.view.ContextThemeWrapper::class.java,
                 "applyOverrideConfiguration",
                 android.content.res.Configuration::class.java,
                 object : XC_MethodHook() {
