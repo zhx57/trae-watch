@@ -327,6 +327,103 @@ class TraeModelPatch : IXposedHookLoadPackage {
                 android.content.Context::class.java, cfgHook,
             )
         }.onFailure { XposedBridge.log("$TAG: cfg dark hook skipped -> ${it.message}") }
+
+        // 6) 补齐 TRAE 自己漏做 night 变体的颜色资源
+        hookMissingNightColors()
+    }
+
+    /**
+     * G. 修复 TRAE 缺失 night 变体的硬编码颜色。
+     *
+     * 实测 resources.arsc 与 drawable XML 后确认根因：
+     *
+     *  1) APK 里根本没有 drawable-night / color-night 目录（各 0 个文件），
+     *     而 res/drawable 下有 1212 个。所有 shape drawable 的背景都写死在浅色。
+     *
+     *  2) 输入框背景 res/drawable/trae_bg_conversation_input.xml 内容是：
+     *         <solid android:color="#B3FFFFFF"/>   ← 半透明白，硬编码
+     *     没有任何资源引用，所以切夜间也不会变。这就是"输入框是白的"。
+     *
+     *  3) 部分颜色资源只有浅色定义、无 night 变体：
+     *         0x7F050394 次级文字 / hint
+     *         0x7F050160 FAB backgroundTint
+     *
+     * 硬编码色无法通过资源系统覆盖，只能在 Drawable 创建后改它的 paint color。
+     * GradientDrawable.setColor() 是唯一稳定的入口。
+     */
+    private fun hookMissingNightColors() {
+        val overrides = mapOf(
+            0x7F050394 to 0xFF8E8E8EL,   // 次级文字/hint
+            0x7F050160 to 0xFF3A3A3AL,   // FAB 背景
+        )
+
+        // 1) 颜色资源覆盖（getColor 两个重载）
+        val colorHook = object : XC_MethodHook() {
+            override fun afterHookedMethod(param: MethodHookParam) {
+                val id = (param.args[0] as? Number)?.toInt() ?: return
+                overrides[id]?.let { param.result = it.toInt() }
+            }
+        }
+        runCatching {
+            XposedHelpers.findAndHookMethod(
+                android.content.res.Resources::class.java,
+                "getColor", java.lang.Integer.TYPE, colorHook,
+            )
+        }.onFailure { XposedBridge.log("$TAG: getColor hook skipped -> ${it.message}") }
+        runCatching {
+            XposedHelpers.findAndHookMethod(
+                android.content.res.Resources::class.java,
+                "getColor", java.lang.Integer.TYPE,
+                android.content.res.Resources.Theme::class.java, colorHook,
+            )
+        }.onFailure { XposedBridge.log("$TAG: getColor(theme) hook skipped -> ${it.message}") }
+
+        // 2) 硬编码 shape 颜色：GradientDrawable 的两个 setColor 重载都要拦。
+        //    XML 里的 <solid android:color="#B3FFFFFF"/> 在 inflate 时会走到这两个之一。
+        runCatching {
+            XposedHelpers.findAndHookMethod(
+                android.graphics.drawable.GradientDrawable::class.java,
+                "setColor", java.lang.Integer.TYPE,
+                object : XC_MethodHook() {
+                    override fun beforeHookedMethod(param: MethodHookParam) {
+                        val c = (param.args[0] as? Number)?.toInt() ?: return
+                        patchBrightColor(c)?.let { param.args[0] = it }
+                    }
+                },
+            )
+        }.onFailure { XposedBridge.log("$TAG: gradient setColor(int) skipped -> ${it.message}") }
+
+        runCatching {
+            XposedHelpers.findAndHookMethod(
+                android.graphics.drawable.GradientDrawable::class.java,
+                "setColor", android.content.res.ColorStateList::class.java,
+                object : XC_MethodHook() {
+                    override fun beforeHookedMethod(param: MethodHookParam) {
+                        val cs = param.args[0] as? android.content.res.ColorStateList ?: return
+                        val c = cs.defaultColor
+                        patchBrightColor(c)?.let {
+                            param.args[0] = android.content.res.ColorStateList.valueOf(it)
+                        }
+                    }
+                },
+            )
+        }.onFailure { XposedBridge.log("$TAG: gradient setColor(csl) skipped -> ${it.message}") }
+
+        XposedBridge.log("$TAG: night color overrides installed (${overrides.size})")
+    }
+
+    /**
+     * 把「高亮度」颜色改成深色，只对接近白的颜色生效。
+     * 返回 null 表示不需要修改，避免误伤品牌色与深色本身。
+     */
+    private fun patchBrightColor(c: Int): Int? {
+        val a = (c ushr 24) and 0xFF
+        val r = (c ushr 16) and 0xFF
+        val g = (c ushr 8) and 0xFF
+        val b = c and 0xFF
+        if (r < 0xE0 || g < 0xE0 || b < 0xE0) return null
+        val newA = if (a < 0x40) 0x40 else a
+        return (newA shl 24) or 0x2A2A2A
     }
 
     /** 同步静态字段，避免别处直接读字段时拿到旧值 */
