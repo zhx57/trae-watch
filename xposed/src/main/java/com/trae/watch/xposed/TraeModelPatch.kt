@@ -132,6 +132,8 @@ class TraeModelPatch : IXposedHookLoadPackage {
             // 真的被选中、Compose 是否绕过 XML），View 树后处理不依赖任何前提，
             // 只要视图显示出来就一定能改到。
             hookDarkModeViewTree(lpparam.classLoader)
+            hookWhiteBackground(lpparam.classLoader)
+            hookSendIconResources(lpparam.classLoader)
             hookComposeDarkTheme(lpparam.classLoader)
             hookComposeContextWrapper(lpparam.classLoader)
             // init() 可能在 hook 装上前就跑过了，这里主动补一刀
@@ -583,42 +585,91 @@ class TraeModelPatch : IXposedHookLoadPackage {
                     v.getChildAt(i)?.let { stack.add(it) }
                 }
             }
-            if (v.id == android.view.View.NO_ID) {
-                paintDialogSurface(v)
-                continue
-            }
-            val name = runCatching { v.resources.getResourceEntryName(v.id) }.getOrNull()
-            if (name != null && darkViewNames.contains(name)) {
-                runCatching { paintDark(v, name) }
-                continue
-            }
-            // 无 id 但带背景的容器：可能是 bottom_sheet 的白色底
-            paintDialogSurface(v)
+            if (v.id == android.view.View.NO_ID) continue
+            val name = runCatching { v.resources.getResourceEntryName(v.id) }.getOrNull() ?: continue
+            if (!darkViewNames.contains(name)) continue
+            runCatching { paintDark(v, name) }
         }
     }
 
     /**
-     * 处理插件 / 技能等 bottom sheet 的白色底板。
+     * J. 白色底板统一拦截 —— 不依赖布局时机和尺寸。
      *
-     * bg_bottom_sheet.xml 是 <solid #FFFFFFFF> + 顶部圆角，无 night 变体。
-     * 它被 inflate 成 GradientDrawable 后塞进 View.background，这里直接把
-     * 纯白 / 近白的纯色 GradientDrawable 换成深色，形状（圆角）整体保留不了，
-     * 所以只在宽度接近屏幕宽度时才替换，避免误伤小图标。
+     * 【之前为什么漏】
+     * 1) onAttachedToWindow 触发时 View 还没测量，width/height 都是 0，
+     *    我上一版用「宽度 ≥ 85% 屏幕」做判断，于是全部提前 return。
+     * 2) BottomSheetDialogFragment 的 View 挂在 Dialog 的独立 Window 上，
+     *    根本不在 Activity.decorView 里，按 Activity 遍历永远够不到。
+     *
+     * 【这一版】
+     * 直接 hook View.setBackground(Drawable)。这是所有背景的最终入口，
+     * 无论是 XML inflate 还是代码 setBackgroundResource，都会经过这里，
+     * 也不受测量时机和窗口归属影响。
+     *
+     * 判定条件（三重收紧，避免误伤）：
+     *   - 是 GradientDrawable
+     *   - 它的纯色（getColor()，API 24+）接近纯白且不透明
+     *   - 该 View 的布局尺寸允许接近满宽（layoutParams 里 MATCH_PARENT 或很大），
+     *     不能等到测量后才知道，所以改看 layoutParams
      */
-    private fun paintDialogSurface(v: android.view.View) {
-        val bg = v.background as? android.graphics.drawable.GradientDrawable ?: return
-        // 只处理接近满宽的容器
-        val w = v.width
-        if (w <= 0 || w < v.resources.displayMetrics.widthPixels * 0.85f) return
-        val h = v.height
-        if (h <= 0) return
-        runCatching {
-            val d = bg.constantState?.newDrawable()?.mutate() ?: bg.mutate()
-            d.colorFilter = android.graphics.PorterDuffColorFilter(
-                0xFF1E1E1E.toInt(), android.graphics.PorterDuff.Mode.SRC_IN,
-            )
-            v.background = d
+    private fun hookWhiteBackground(cl: ClassLoader) {
+        val hook = object : XC_MethodHook() {
+            override fun beforeHookedMethod(param: MethodHookParam) {
+                val v = param.thisObject as? android.view.View ?: return
+                val bg = param.args[0] as? android.graphics.drawable.GradientDrawable ?: return
+                val color = runCatching { bg.color }.getOrNull() ?: return
+                if (!isNearOpaqueWhite(color)) return
+                // 只处理横向铺满的容器，避免把白色小圆点/图标底也刷掉
+                val lp = v.layoutParams
+                val wide = lp != null &&
+                    (lp.width == android.view.ViewGroup.LayoutParams.MATCH_PARENT ||
+                        lp.width > v.resources.displayMetrics.widthPixels * 0.8f)
+                if (!wide) return
+                runCatching {
+                    val d = bg.constantState?.newDrawable()?.mutate() ?: bg.mutate()
+                    d.colorFilter = android.graphics.PorterDuffColorFilter(
+                        0xFF1E1E1E.toInt(), android.graphics.PorterDuff.Mode.SRC_IN,
+                    )
+                    param.args[0] = d
+                }
+            }
         }
+
+        runCatching {
+            XposedHelpers.findAndHookMethod(
+                android.view.View::class.java,
+                "setBackground", android.graphics.drawable.Drawable::class.java,
+                hook,
+            )
+            XposedBridge.log("$TAG: white background hook installed")
+        }.onFailure { XposedBridge.log("$TAG: setBackground hook skipped -> ${it.message}") }
+
+        runCatching {
+            XposedHelpers.findAndHookMethod(
+                android.view.View::class.java,
+                "setBackgroundColor", java.lang.Integer.TYPE,
+                object : XC_MethodHook() {
+                    override fun beforeHookedMethod(param: MethodHookParam) {
+                        val c = (param.args[0] as? Number)?.toInt() ?: return
+                        if (!isNearOpaqueWhite(c)) return
+                        val v = param.thisObject as? android.view.View ?: return
+                        val lp = v.layoutParams ?: return
+                        val wide = lp.width == android.view.ViewGroup.LayoutParams.MATCH_PARENT ||
+                            lp.width > v.resources.displayMetrics.widthPixels * 0.8f
+                        if (wide) param.args[0] = 0xFF1E1E1E.toInt()
+                    }
+                },
+            )
+        }.onFailure { XposedBridge.log("$TAG: setBackgroundColor hook skipped -> ${it.message}") }
+    }
+
+    /** 判定是否接近纯白且基本不透明 */
+    private fun isNearOpaqueWhite(color: Int): Boolean {
+        val a = (color ushr 24) and 0xFF
+        val r = (color ushr 16) and 0xFF
+        val g = (color ushr 8) and 0xFF
+        val b = color and 0xFF
+        return a >= 0xE0 && r >= 0xE8 && g >= 0xE8 && b >= 0xE8
     }
 
     /** 需要处理的控件名 */
@@ -646,6 +697,7 @@ class TraeModelPatch : IXposedHookLoadPackage {
         "btn_chat_new",
         "btn_hold_to_talk",
         "btn_express_pass",
+        "btn_send_text",
         // 插件 / 技能选择面板的空态类容器。
         // 注意：content_container / search_container 被 6 个布局共用，
         // 按名字全局改会误伤消息气泡，改为在 View 上判断父链里的 title_bar 来决定。
@@ -719,11 +771,85 @@ class TraeModelPatch : IXposedHookLoadPackage {
                 ?.setTextColor(0xFFE5E5E5.toInt())
             // 输入框底部操作按钮。这些图标是 PNG 位图（drawable-xxhdpi-v4/
             // ic_input_bar_add.png 等），像素均值 RGB(37,37,37)，在深色底上不可见。
-            // setColorFilter 对带 alpha 通道的位图整片染色，效果等同 tint。
+            // 发送按钮有三态图：
+            //   ic_input_arrow_up.png         紫色 (82,71,228)   可用，不动
+            //   ic_input_arrow_up_enable.png  深灰 (63,65,69)    深色底上不可见
+            //   ic_input_arrow_up_disable.png 灰蓝 (87,102,121)  可接受
+            // btn_send_text 在可用态会切到 _enable 那张，所以也要一起提亮。
             "btn_plus", "btn_microphone", "btn_chat_new",
             "btn_hold_to_talk", "btn_express_pass" -> (v as? android.widget.ImageView)
                 ?.setColorFilter(0xFFE5E5E5.toInt())
+            "btn_send_text" -> paintSendButton(v)
         }
+    }
+
+    /**
+     * 发送按钮单独处理。
+     *
+     * 它是个 ImageView，src 会随可用状态在三张 png 之间切换：
+     *   ic_input_arrow_up.png         紫色   —— 原生可读，保持品牌色
+     *   ic_input_arrow_up_enable.png  深灰   —— 深色底上不可见，必须提亮
+     *   ic_input_arrow_up_disable.png 灰蓝   —— 可接受
+     *
+     * 光看 intrinsicWidth 不可靠（会按屏幕密度缩放），所以这里什么都不做，
+     * 改由 hookSendIconResources() 在 setImageResource 时按资源 id 精确上色。
+     */
+    private fun paintSendButton(v: android.view.View) {
+        // XML 里 android:src 不走 setImageResource，首帧图标 hook 不到。
+        // 这里统一处理：紫色态本来就能看见，只有深灰 enable 态需要提亮。
+        // 判断依据用 ImageView 当前 drawable 的 pixel 采样不现实，
+        // 改为「只要 colorFilter 为空就先提亮，等状态变了 setImageResource hook 会再修正」。
+        val iv = v as? android.widget.ImageView ?: return
+        if (iv.colorFilter == null) {
+            iv.setColorFilter(0xFFE5E5E5.toInt())
+        }
+    }
+
+    /**
+     * 按资源 id 精确给输入区图标上色。
+     *
+     * 这些图标是 png 位图，没有 tint 属性，只能靠 setColorFilter。
+     * 只在「深色不可读」的那几张上动手，紫色品牌图和绿色等彩色图保持原样。
+     */
+    private fun hookSendIconResources(cl: ClassLoader) {
+        // 资源 id -> 目标色。全部通过 _ids.py 反查确认。
+        // 注意：这里只列深灰/近黑的图标。
+        val recolor = HashMap<Int, Int>()
+
+        // 图标资源名 -> id 在运行时按名字解析，避免硬编码出错
+        val names = listOf(
+            "ic_input_bar_add",
+            "ic_input_bar_microphone",
+            "ic_input_bar_voice_chat",
+            "ic_hold_to_talk",
+            "ic_input_arrow_up_enable",
+        )
+        val ids = HashMap<String, Int>()
+        for (nm in names) {
+            val id = runCatching {
+                Class.forName("com.bytedance.trae.conversation.R\$drawable", false, cl)
+                    .getField(nm).getInt(null)
+            }.getOrNull() ?: continue
+            ids[nm] = id
+            recolor[id] = 0xFFE5E5E5.toInt()
+        }
+        XposedBridge.log("$TAG: send icon ids resolved=${ids.keys}")
+
+        runCatching {
+            XposedHelpers.findAndHookMethod(
+                android.widget.ImageView::class.java,
+                "setImageResource", java.lang.Integer.TYPE,
+                object : XC_MethodHook() {
+                    override fun afterHookedMethod(param: MethodHookParam) {
+                        val id = (param.args[0] as? Number)?.toInt() ?: return
+                        val color = recolor[id] ?: return
+                        (param.thisObject as? android.widget.ImageView)
+                            ?.setColorFilter(color)
+                    }
+                },
+            )
+            XposedBridge.log("$TAG: setImageResource icon tint installed")
+        }.onFailure { XposedBridge.log("$TAG: setImageResource hook skipped -> ${it.message}") }
     }
 
     /** 生成一个纯色圆角 drawable */
@@ -764,7 +890,9 @@ class TraeModelPatch : IXposedHookLoadPackage {
      * 等到 newInstance 被调用时替换第一个参数 cliId。
      */
     private fun hookRemoteSkills(cl: ClassLoader) {
-        val pendingCliId = ThreadLocal<String?>()
+        // 用静态变量而不是 ThreadLocal：showSkillsBottomSheetForDevice 到
+        // newInstance 之间可能跨协程线程，ThreadLocal 会丢值。
+        val pendingCliId = java.util.concurrent.atomic.AtomicReference<String?>(null)
 
         // 1) 在分发入口截获 REMOTE 设备
         runCatching {
@@ -780,52 +908,78 @@ class TraeModelPatch : IXposedHookLoadPackage {
                 deviceCls, java.lang.Boolean.TYPE,
                 object : XC_MethodHook() {
                     override fun beforeHookedMethod(param: MethodHookParam) {
-                        pendingCliId.remove()
+                        pendingCliId.set(null)
                         val device = param.args[0] ?: return
-                        // CliType 枚举名含 REMOTE 才处理
                         val type = runCatching {
                             XposedHelpers.callMethod(device, "getType")
                         }.getOrNull() ?: return
-                        if (type.toString() != "REMOTE") return
                         val id = runCatching {
                             XposedHelpers.callMethod(device, "getId") as? String
                         }.getOrNull()
                         val dir = runCatching {
                             XposedHelpers.callMethod(device, "getSelectedDirectory") as? String
                         }.getOrNull()
-                        if (!id.isNullOrBlank()) {
+                        XposedBridge.log("$TAG: skill entry type=$type id=$id dir=$dir")
+                        if (type.toString() == "REMOTE" && !id.isNullOrBlank()) {
                             pendingCliId.set(id)
-                            XposedBridge.log("$TAG: remote skill cliId=$id dir=$dir")
                         }
                     }
                 },
             )
         }.onFailure { XposedBridge.log("$TAG: remote skill entry hook skipped -> ${it.message}") }
 
-        // 2) 在 newInstance 里补 cliId / workspaceFolder / isIdeSkills
+        // 2) 在 Companion.newInstance 上补 cliId。
+        //    最后一个参数是 SoloChatMode 枚举，必须用真实类型而不是 Object，
+        //    否则 findAndHookMethod 找不到方法。
         runCatching {
             val companionCls = XposedHelpers.findClass(
                 "com.bytedance.trae.conversation.skill.SkillsBottomSheet\$Companion", cl,
+            )
+            val modeCls = XposedHelpers.findClass(
+                "com.bytedance.trae.conversation.tracker.SoloChatMode", cl,
             )
             XposedHelpers.findAndHookMethod(
                 companionCls, "newInstance",
                 String::class.java, String::class.java, String::class.java,
                 java.lang.Boolean.TYPE, String::class.java, String::class.java,
-                String::class.java, java.lang.Boolean.TYPE, Object::class.java,
+                String::class.java, java.lang.Boolean.TYPE, modeCls,
                 object : XC_MethodHook() {
                     override fun beforeHookedMethod(param: MethodHookParam) {
-                        val id = pendingCliId.get() ?: return
-                        if (param.args[0] == null) {
-                            param.args[0] = id
-                            // isIdeSkills=true 才会带上 projectId 走 IDE 那套分支
-                            param.args[3] = true
-                            XposedBridge.log("$TAG: injected remote cliId into SkillsBottomSheet")
-                        }
-                        pendingCliId.remove()
+                        val id = pendingCliId.getAndSet(null) ?: return
+                        XposedBridge.log("$TAG: injecting cliId=$id into skills sheet")
+                        param.args[0] = id
+                        param.args[3] = true
                     }
                 },
             )
+            XposedBridge.log("$TAG: newInstance hook installed")
         }.onFailure { XposedBridge.log("$TAG: newInstance hook skipped -> ${it.message}") }
+
+        // 3) 最后一道保险：直接 hook SkillsViewModel.loadSkills()。
+        //    即便 newInstance 的 hook 因为签名不匹配没装上，这里也能在真正发起请求前
+        //    把 cliId 补进去 —— loadSkills 内部第一句就是读 this.cliId 决定走哪个 API。
+        runCatching {
+            val vmCls = XposedHelpers.findClass(
+                "com.bytedance.trae.conversation.skill.SkillsViewModel", cl,
+            )
+            XposedHelpers.findAndHookMethod(
+                vmCls, "loadSkills",
+                object : XC_MethodHook() {
+                    override fun beforeHookedMethod(param: MethodHookParam) {
+                        val vm = param.thisObject ?: return
+                        val id = pendingCliId.get() ?: return
+                        val cur = runCatching {
+                            XposedHelpers.getObjectField(vm, "cliId") as? String
+                        }.getOrNull()
+                        if (cur.isNullOrBlank()) {
+                            XposedHelpers.setObjectField(vm, "cliId", id)
+                            XposedBridge.log("$TAG: loadSkills cliId patched to $id")
+                        }
+                    }
+                },
+            )
+            XposedBridge.log("$TAG: loadSkills hook installed")
+        }.onFailure { XposedBridge.log("$TAG: loadSkills hook skipped -> ${it.message}") }
     }
 
     /** 反射调 AppCompatDelegate.setDefaultNightMode，让资源走 -night 目录 */
