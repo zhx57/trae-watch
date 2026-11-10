@@ -76,6 +76,14 @@ class TraeModelPatch : IXposedHookLoadPackage {
 
         private const val CLS_THEME_MANAGER =
             "com.bytedance.trae.common.theme.ThemeManager"
+        private const val CLS_APPCOMPAT_DELEGATE =
+            "androidx.appcompat.app.AppCompatDelegate"
+
+        /**
+         * AppCompatDelegate 的夜间模式常量。
+         * 注意：MODE_NIGHT_NO = 1、MODE_NIGHT_YES = 2，别写反。
+         */
+        private const val MODE_NIGHT_YES = 2
 
         /**
          * 档位取值。
@@ -107,6 +115,8 @@ class TraeModelPatch : IXposedHookLoadPackage {
             hookRemoteInputCapabilities(lpparam.classLoader)
             hookInputRows(lpparam.classLoader)
             hookDarkMode(lpparam.classLoader)
+            // init() 可能在 hook 装上前就跑过了，这里主动补一刀
+            applyAppCompatNight(lpparam.classLoader)
             XposedBridge.log("$TAG: hooks installed on ${lpparam.processName}")
         } catch (t: Throwable) {
             XposedBridge.log("$TAG: hook failed -> ${t.message}")
@@ -196,64 +206,79 @@ class TraeModelPatch : IXposedHookLoadPackage {
     /**
      * F. 全局深色模式。
      *
-     * 逆向确认 TRAE 的主题完全由 ThemeManager 控制，不看资源目录：
-     *   - static volatile boolean isDarkMode  ← 实际被读的开关
-     *   - static volatile int darkMode        ← -1=跟随系统 / 1=深色 / 2=浅色
+     * 逆向确认 TRAE 主题完全由 ThemeManager 控制：
+     *   static volatile boolean isDarkMode      // UI 实际读的开关
+     *   static volatile int darkMode = -1       // 透传给 AppCompatDelegate
      *
      *   updateDarkModeFlag(cfg) { isDarkMode = (cfg.uiMode & 48) == 32 }
      *   init()                  { darkMode = 1; AppCompatDelegate.setDefaultNightMode(1) }
+     *   applyDarkMode(mode)     { darkMode = mode; ...; setDefaultNightMode(mode) }
      *
-     * 所以正确的做法不是改 Configuration，而是：
-     *   1. hook updateDarkModeFlag，让 isDarkMode 恒为 true（Compose/UI 读这个）
-     *   2. hook init，把 darkMode 强制为 1（MODE_NIGHT_YES）
-     *   3. hook applyDarkMode，用户/系统改主题时也强制 1
+     * 【上一版为什么没生效】
+     * AppCompatDelegate 的常量是 MODE_NIGHT_NO = 1、MODE_NIGHT_YES = 2，
+     * 我上一版把 darkMode 强制成 1，等于强制了浅色模式，所以界面毫无变化。
      *
-     * 保留 attachBaseContext 的 Configuration 改写作为兜底，
-     * 因为部分第三方组件（WebView、Lynx）仍可能读 uiMode。
+     * 【这一版的做法】
+     * 不再依赖字段时序，直接改方法返回值：
+     *   1. isDarkMode()      -> 恒 true          （UI / Compose 读这个）
+     *   2. getCurrentMode()  -> 恒 2 (NIGHT_YES) （设置页显示的当前模式）
+     *   3. applyDarkMode(m)  -> 参数改成 2        （用户手动切浅色也压回深色）
+     *   4. init() 之后主动调 AppCompatDelegate.setDefaultNightMode(2)
+     *      —— 这一条决定 XML 资源走 -night 目录，是纯字段 hook 覆盖不到的
+     *   5. attachBaseContext 改 uiMode 兜底      （WebView / Lynx 读 Configuration）
      */
     private fun hookDarkMode(cl: ClassLoader) {
-        // 1) isDarkMode 恒 true
+        // 1) UI 读的开关恒为 true
         runCatching {
             XposedHelpers.findAndHookMethod(
-                CLS_THEME_MANAGER, cl,
-                "updateDarkModeFlag",
-                android.content.res.Configuration::class.java,
+                CLS_THEME_MANAGER, cl, "isDarkMode",
                 object : XC_MethodHook() {
                     override fun afterHookedMethod(param: MethodHookParam) {
-                        XposedHelpers.setStaticBooleanField(
-                            param.method.declaringClass, "isDarkMode", true,
-                        )
+                        param.result = true
                     }
                 },
             )
-        }.onFailure { XposedBridge.log("$TAG: dark flag hook skipped -> ${it.message}") }
+        }.onFailure { XposedBridge.log("$TAG: isDarkMode hook skipped -> ${it.message}") }
 
-        // 2) init / applyDarkMode 强制 MODE_NIGHT_YES
+        // 2) 当前模式恒为 MODE_NIGHT_YES
         runCatching {
             XposedHelpers.findAndHookMethod(
-                CLS_THEME_MANAGER, cl, "init",
+                CLS_THEME_MANAGER, cl, "getCurrentMode",
                 object : XC_MethodHook() {
-                    override fun beforeHookedMethod(param: MethodHookParam) {
-                        forceNight(param.method.declaringClass)
+                    override fun afterHookedMethod(param: MethodHookParam) {
+                        param.result = MODE_NIGHT_YES
                     }
                 },
             )
-        }.onFailure { XposedBridge.log("$TAG: dark init hook skipped -> ${it.message}") }
+        }.onFailure { XposedBridge.log("$TAG: getCurrentMode hook skipped -> ${it.message}") }
 
+        // 3) 用户/系统切主题时压回深色
         runCatching {
             XposedHelpers.findAndHookMethod(
                 CLS_THEME_MANAGER, cl, "applyDarkMode",
                 java.lang.Integer.TYPE,
                 object : XC_MethodHook() {
                     override fun beforeHookedMethod(param: MethodHookParam) {
-                        param.args[0] = 1
-                        forceNight(param.method.declaringClass)
+                        param.args[0] = MODE_NIGHT_YES
                     }
                 },
             )
-        }.onFailure { XposedBridge.log("$TAG: dark apply hook skipped -> ${it.message}") }
+        }.onFailure { XposedBridge.log("$TAG: applyDarkMode hook skipped -> ${it.message}") }
 
-        // 3) 兜底：Configuration 也置为夜间（WebView / Lynx 等）
+        // 4) init 执行完，主动把 AppCompat 切成夜间，让 XML 走 -night 资源
+        runCatching {
+            XposedHelpers.findAndHookMethod(
+                CLS_THEME_MANAGER, cl, "init",
+                object : XC_MethodHook() {
+                    override fun afterHookedMethod(param: MethodHookParam) {
+                        forceNight(param.method.declaringClass)
+                        applyAppCompatNight(cl)
+                    }
+                },
+            )
+        }.onFailure { XposedBridge.log("$TAG: dark init hook skipped -> ${it.message}") }
+
+        // 5) 兜底：Configuration 置为夜间（WebView / Lynx 等第三方组件）
         val cfgHook = object : XC_MethodHook() {
             override fun afterHookedMethod(param: MethodHookParam) {
                 val ctx = param.result as? android.content.Context ?: return
@@ -272,11 +297,20 @@ class TraeModelPatch : IXposedHookLoadPackage {
         }.onFailure { XposedBridge.log("$TAG: cfg dark hook skipped -> ${it.message}") }
     }
 
+    /** 同步静态字段，避免别处直接读字段时拿到旧值 */
     private fun forceNight(themeCls: Class<*>) {
         runCatching {
-            XposedHelpers.setStaticIntField(themeCls, "darkMode", 1)
+            XposedHelpers.setStaticIntField(themeCls, "darkMode", MODE_NIGHT_YES)
             XposedHelpers.setStaticBooleanField(themeCls, "isDarkMode", true)
         }
+    }
+
+    /** 反射调 AppCompatDelegate.setDefaultNightMode，让资源走 -night 目录 */
+    private fun applyAppCompatNight(cl: ClassLoader) {
+        runCatching {
+            val cls = XposedHelpers.findClass(CLS_APPCOMPAT_DELEGATE, cl)
+            XposedHelpers.callStaticMethod(cls, "setDefaultNightMode", MODE_NIGHT_YES)
+        }.onFailure { XposedBridge.log("$TAG: appcompat night skipped -> ${it.message}") }
     }
 
     /**
