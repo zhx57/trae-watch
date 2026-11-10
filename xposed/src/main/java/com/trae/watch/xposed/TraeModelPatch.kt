@@ -594,6 +594,17 @@ class TraeModelPatch : IXposedHookLoadPackage {
         "title_bar_mark",
         "ll_message_container",
         "btn_scroll_to_bottom",
+        // 人类确认（提问选项）卡片：trae_dialog_human_checkpoint.xml
+        "normal_content",
+        "card_container",
+        "title_scroll_view",
+        "option_root",
+        "checkbox_container",
+        // 加号菜单（输入区上下文选择）：图标是黑色 vector，需要 tint
+        "iv_direct_icon",
+        "iv_source_icon",
+        "tv_direct_title",
+        "tv_source_title",
     )
 
     /** 按控件名执行深色改写 */
@@ -631,8 +642,45 @@ class TraeModelPatch : IXposedHookLoadPackage {
                     setColor(0xFF2A2A2A.toInt())
                 }
             }
+            // 提问选项卡片内容区：trae_bg_checkpoint_card 的 solid 是硬编码
+            // #FFFFFFFF，无 night 变体，且由 XML inflate 直接写入，走不到 setColor。
+            "normal_content" -> {
+                v.background = rounded(0xFF1E1E1E.toInt(), 24f * density)
+            }
+            // 卡片外层 CardView：边框和阴影本体，也得压深
+            "card_container" -> (v as? androidx.cardview.widget.CardView)
+                ?.setCardBackgroundColor(0xFF1E1E1E.toInt())
+            // 问题标题滚动区：去掉浅色渐隐边
+            "title_scroll_view" -> {
+                runCatching {
+                    XposedHelpers.callMethod(v, "setRequiresFadingEdge", 0)
+                }
+            }
+            // 单个选项行：trae_bg_checkpoint_option_normal 也是硬编码浅色
+            "option_root" -> {
+                v.background = rounded(0xFF1E1E1E.toInt(), 12f * density)
+                recolorTexts(v, 0xFFE5E5E5.toInt())
+            }
+            // 选项序号框：trae_bg_checkpoint_option_index 硬编码浅色
+            "checkbox_container" -> {
+                v.background = rounded(0xFF2E2E2E.toInt(), 6f * density)
+            }
+            // 加号菜单图标：vector 本身是黑色，深色底上完全看不见，改成浅色
+            "iv_direct_icon", "iv_source_icon" -> (v as? android.widget.ImageView)
+                ?.setColorFilter(0xFFE5E5E5.toInt())
+            // 加号菜单标题文字
+            "tv_direct_title", "tv_source_title" -> (v as? android.widget.TextView)
+                ?.setTextColor(0xFFE5E5E5.toInt())
         }
     }
+
+    /** 生成一个纯色圆角 drawable */
+    private fun rounded(color: Int, radius: Float): android.graphics.drawable.GradientDrawable =
+        android.graphics.drawable.GradientDrawable().apply {
+            setShape(android.graphics.drawable.GradientDrawable.RECTANGLE)
+            setColor(color)
+            cornerRadius = radius
+        }
 
     /** 把子树里所有 TextView 的文字色刷成指定值 */
     private fun recolorTexts(root: android.view.View, color: Int) {
