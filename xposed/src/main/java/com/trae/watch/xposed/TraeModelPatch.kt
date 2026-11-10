@@ -79,6 +79,10 @@ class TraeModelPatch : IXposedHookLoadPackage {
         private const val CLS_APPCOMPAT_DELEGATE =
             "androidx.appcompat.app.AppCompatDelegate"
 
+        /** Compose 主题入口，TRAE 所有 Compose 界面都经由它取色 */
+        private const val CLS_COMPOSE_TOKENS =
+            "com.bytedance.trae.kmp.ui.theme.TraeComposeTokensKt"
+
         /**
          * AppCompatDelegate 的夜间模式常量。
          * 注意：MODE_NIGHT_NO = 1、MODE_NIGHT_YES = 2，别写反。
@@ -115,6 +119,8 @@ class TraeModelPatch : IXposedHookLoadPackage {
             hookRemoteInputCapabilities(lpparam.classLoader)
             hookInputRows(lpparam.classLoader)
             hookDarkMode(lpparam.classLoader)
+            hookComposeDarkTheme(lpparam.classLoader)
+            hookComposeContextWrapper(lpparam.classLoader)
             // init() 可能在 hook 装上前就跑过了，这里主动补一刀
             applyAppCompatNight(lpparam.classLoader)
             XposedBridge.log("$TAG: hooks installed on ${lpparam.processName}")
@@ -311,6 +317,93 @@ class TraeModelPatch : IXposedHookLoadPackage {
             val cls = XposedHelpers.findClass(CLS_APPCOMPAT_DELEGATE, cl)
             XposedHelpers.callStaticMethod(cls, "setDefaultNightMode", MODE_NIGHT_YES)
         }.onFailure { XposedBridge.log("$TAG: appcompat night skipped -> ${it.message}") }
+    }
+
+    /**
+     * G. 强制 Compose 主题为深色（真正的关键点）。
+     *
+     * 前两版都打偏了。实测截图里 Compose 界面一直是白的，
+     * 反编译 TraeComposeTokensKt 才看清原因：
+     *
+     *   public static final void TraeDesignTheme(boolean z, Function2 content, ...) {
+     *       if (默认参数) z = isSystemInDarkTheme(composer);   // 只有不传参才读系统
+     *       CompositionLocalProvider(
+     *           LocalTraeColors.provides(z ? TraeColorTokens.dark : TraeColorTokens.light)
+     *       )
+     *   }
+     *
+     * 而所有调用点都**显式传了 false**：
+     *   TraeComposeContentFragment:  TraeDesignTheme(false, ...)
+     *   TraeNativeMenuPopup:         TraeDesignTheme(false, ...)
+     *   VideoArtifactPreviewActivity: TraeDesignTheme(false, ...)
+     *   ImagePreviewActivity:         TraeDesignTheme(false, ...)
+     *   HtmlArtifactPreviewActivity:  TraeDesignTheme(false, ...)
+     *
+     * 所以无论 ThemeManager、Configuration、AppCompat 怎么设置，
+     * Compose 界面永远拿 light 色板。必须直接改这个函数的入参。
+     *
+     * 签名：(Z, Lkotlin/jvm/functions/Function2;, Landroidx/compose/runtime/Composer;, II)V
+     * args 里只有前两个是业务参数，后三个是编译器注入的 composer/flags，
+     * 所以只改 args[0]。
+     */
+    private fun hookComposeDarkTheme(cl: ClassLoader) {
+        val composerCls = runCatching {
+            XposedHelpers.findClass("androidx.compose.runtime.Composer", cl)
+        }.getOrNull()
+        if (composerCls == null) {
+            XposedBridge.log("$TAG: composer class not found, skip compose dark hook")
+            return
+        }
+        runCatching {
+            XposedHelpers.findAndHookMethod(
+                CLS_COMPOSE_TOKENS, cl, "TraeDesignTheme",
+                java.lang.Boolean.TYPE,
+                kotlin.jvm.functions.Function2::class.java,
+                composerCls,
+                java.lang.Integer.TYPE,
+                java.lang.Integer.TYPE,
+                object : XC_MethodHook() {
+                    override fun beforeHookedMethod(param: MethodHookParam) {
+                        param.args[0] = true
+                    }
+                },
+            )
+            XposedBridge.log("$TAG: compose dark theme hook installed")
+        }.onFailure { XposedBridge.log("$TAG: compose dark hook skipped -> ${it.message}") }
+    }
+
+    /**
+     * H. isSystemInDarkTheme 兜底。
+     *
+     * 部分 Compose 组件不走 TraeDesignTheme，直接调用 isSystemInDarkTheme()。
+     * 它是 @Composable，编译后是 DarkThemeKt.isSystemInDarkTheme(Composer, int)。
+     * 这个方法内部读 LocalConfiguration，我们不能改它的读法，
+     * 但可以让 Activity 的 Configuration 是夜间（已在 hookDarkMode 第 5 步做了）。
+     *
+     * 这里额外 hook 一次以覆盖 ComposeView 的 attach 时机：
+     * 有些 Activity 的 Compose 内容在 setContentView 之前就 attach 了，
+     * 那时 Configuration 可能还是旧的。
+     */
+    private fun hookComposeContextWrapper(cl: ClassLoader) {
+        // 给 ComposeView 换一个夜间 Context，保证 LocalConfiguration 是夜间
+        runCatching {
+            val cls = XposedHelpers.findClass(
+                "androidx.compose.ui.platform.ComposeView", cl,
+            )
+            XposedHelpers.findAndHookMethod(
+                cls, "setContext", android.content.Context::class.java,
+                object : XC_MethodHook() {
+                    override fun beforeHookedMethod(param: MethodHookParam) {
+                        val ctx = param.args[0] as? android.content.Context ?: return
+                        val cfg = android.content.res.Configuration(ctx.resources.configuration)
+                        cfg.uiMode = (cfg.uiMode and
+                            android.content.res.Configuration.UI_MODE_NIGHT_MASK.inv()) or
+                            android.content.res.Configuration.UI_MODE_NIGHT_YES
+                        param.args[0] = ctx.createConfigurationContext(cfg)
+                    }
+                },
+            )
+        }.onFailure { XposedBridge.log("$TAG: compose ctx hook skipped -> ${it.message}") }
     }
 
     /**
