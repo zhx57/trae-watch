@@ -352,34 +352,31 @@ class TraeModelPatch : IXposedHookLoadPackage {
      * GradientDrawable.setColor() 是唯一稳定的入口。
      */
     private fun hookMissingNightColors() {
-        val overrides = mapOf(
-            0x7F050394 to 0xFF8E8E8EL,   // 次级文字/hint
-            0x7F050160 to 0xFF3A3A3AL,   // FAB 背景
-        )
+        // 【已删除两个错误的覆盖】
+        // 上一版我覆盖了这两个 ID，但反查资源名后发现判断全错：
+        //
+        //   0x7F050394 = trae_text_text_tertiary  三级文字，改成 #8E8E8E 会让正文偏灰
+        //   0x7F050160 = solo_task_fab_bg        FAB 背景，改成 #3A3A3A 后
+        //                                        所有浮动按钮（发送、新建）全变黑
+        //
+        // 这正是用户反馈「大量按钮颜色是黑的」的直接原因。
+        // 这两个资源虽然缺 night 变体，但原值在深色底上仍可辨认，
+        // 强行覆盖的副作用远大于收益，因此全部移除。
+        //
+        // 只保留输入框那条硬编码白色的修复，见下方。
 
-        // 1) 颜色资源覆盖（getColor 两个重载）
-        val colorHook = object : XC_MethodHook() {
-            override fun afterHookedMethod(param: MethodHookParam) {
-                val id = (param.args[0] as? Number)?.toInt() ?: return
-                overrides[id]?.let { param.result = it.toInt() }
-            }
-        }
-        runCatching {
-            XposedHelpers.findAndHookMethod(
-                android.content.res.Resources::class.java,
-                "getColor", java.lang.Integer.TYPE, colorHook,
-            )
-        }.onFailure { XposedBridge.log("$TAG: getColor hook skipped -> ${it.message}") }
-        runCatching {
-            XposedHelpers.findAndHookMethod(
-                android.content.res.Resources::class.java,
-                "getColor", java.lang.Integer.TYPE,
-                android.content.res.Resources.Theme::class.java, colorHook,
-            )
-        }.onFailure { XposedBridge.log("$TAG: getColor(theme) hook skipped -> ${it.message}") }
-
-        // 2) 硬编码 shape 颜色：GradientDrawable 的两个 setColor 重载都要拦。
-        //    XML 里的 <solid android:color="#B3FFFFFF"/> 在 inflate 时会走到这两个之一。
+        // 输入框背景硬编码修复。
+        //
+        // res/drawable/trae_bg_conversation_input.xml：
+        //   <solid android:color="#B3FFFFFF"/>    ← 半透明白，硬编码
+        //   <stroke android:width="1dip" android:color="#80FFFFFF"/>
+        // res/drawable/trae_bg_input_top_layer.xml：
+        //   <solid android:color="#B3FFFFFF"/>
+        //
+        // 这两个 drawable 都没有 night 变体（APK 里 drawable-night 目录为空），
+        // 所以切夜间后它们仍是半透明白，叠在深色背景上就是那块白。
+        //
+        // 只精确匹配 0xB3FFFFFF 这一个值，不做范围判断，避免误伤气泡和品牌色。
         runCatching {
             XposedHelpers.findAndHookMethod(
                 android.graphics.drawable.GradientDrawable::class.java,
@@ -387,7 +384,9 @@ class TraeModelPatch : IXposedHookLoadPackage {
                 object : XC_MethodHook() {
                     override fun beforeHookedMethod(param: MethodHookParam) {
                         val c = (param.args[0] as? Number)?.toInt() ?: return
-                        patchBrightColor(c)?.let { param.args[0] = it }
+                        if (c == 0xB3FFFFFF.toInt()) {
+                            param.args[0] = 0xB32A2A2A.toInt()
+                        }
                     }
                 },
             )
@@ -400,30 +399,16 @@ class TraeModelPatch : IXposedHookLoadPackage {
                 object : XC_MethodHook() {
                     override fun beforeHookedMethod(param: MethodHookParam) {
                         val cs = param.args[0] as? android.content.res.ColorStateList ?: return
-                        val c = cs.defaultColor
-                        patchBrightColor(c)?.let {
-                            param.args[0] = android.content.res.ColorStateList.valueOf(it)
+                        if (cs.isStateful) return
+                        if (cs.defaultColor == 0xB3FFFFFF.toInt()) {
+                            param.args[0] = android.content.res.ColorStateList.valueOf(0xB32A2A2A.toInt())
                         }
                     }
                 },
             )
         }.onFailure { XposedBridge.log("$TAG: gradient setColor(csl) skipped -> ${it.message}") }
 
-        XposedBridge.log("$TAG: night color overrides installed (${overrides.size})")
-    }
-
-    /**
-     * 把「高亮度」颜色改成深色，只对接近白的颜色生效。
-     * 返回 null 表示不需要修改，避免误伤品牌色与深色本身。
-     */
-    private fun patchBrightColor(c: Int): Int? {
-        val a = (c ushr 24) and 0xFF
-        val r = (c ushr 16) and 0xFF
-        val g = (c ushr 8) and 0xFF
-        val b = c and 0xFF
-        if (r < 0xE0 || g < 0xE0 || b < 0xE0) return null
-        val newA = if (a < 0x40) 0x40 else a
-        return (newA shl 24) or 0x2A2A2A
+        XposedBridge.log("$TAG: input overlay patch installed")
     }
 
     /** 同步静态字段，避免别处直接读字段时拿到旧值 */
