@@ -79,9 +79,9 @@ class TraeModelPatch : IXposedHookLoadPackage {
         private const val CLS_APPCOMPAT_DELEGATE =
             "androidx.appcompat.app.AppCompatDelegate"
 
-        /** Compose 主题入口，TRAE 所有 Compose 界面都经由它取色 */
-        private const val CLS_COMPOSE_TOKENS =
-            "com.bytedance.trae.kmp.ui.theme.TraeComposeTokensKt"
+        /** Compose 色板数据源，getLight() 返回的就是界面实际使用的浅色板 */
+        private const val CLS_COLOR_TOKENS =
+            "com.bytedance.trae.kmp.ui.theme.TraeColorTokens"
 
         /**
          * AppCompatDelegate 的夜间模式常量。
@@ -320,56 +320,66 @@ class TraeModelPatch : IXposedHookLoadPackage {
     }
 
     /**
-     * G. 强制 Compose 主题为深色（真正的关键点）。
+     * G. 强制 Compose 主题为深色 —— 通过替换色板对象。
      *
-     * 前两版都打偏了。实测截图里 Compose 界面一直是白的，
-     * 反编译 TraeComposeTokensKt 才看清原因：
+     * 【为什么不能 hook TraeDesignTheme】
+     * 上一版 hook 了这个 @Composable 函数并改 args[0] = true，
+     * 实测全白无效：Compose 编译器把它内联进了调用方（调用点多、函数体小），
+     * 运行期并不存在一次真实的 invokestatic，所以 hook 永远不触发。
+     * 开屏变黑但界面全白，正好说明只有 AppCompat 的 -night 资源生效了，
+     * Compose 那部分完全没走到。
      *
-     *   public static final void TraeDesignTheme(boolean z, Function2 content, ...) {
-     *       if (默认参数) z = isSystemInDarkTheme(composer);   // 只有不传参才读系统
-     *       CompositionLocalProvider(
-     *           LocalTraeColors.provides(z ? TraeColorTokens.dark : TraeColorTokens.light)
-     *       )
-     *   }
+     * 【这一版的办法】
+     * 直接换色板数据源。TraeColorTokens 的结构是：
      *
-     * 而所有调用点都**显式传了 false**：
-     *   TraeComposeContentFragment:  TraeDesignTheme(false, ...)
-     *   TraeNativeMenuPopup:         TraeDesignTheme(false, ...)
-     *   VideoArtifactPreviewActivity: TraeDesignTheme(false, ...)
-     *   ImagePreviewActivity:         TraeDesignTheme(false, ...)
-     *   HtmlArtifactPreviewActivity:  TraeDesignTheme(false, ...)
+     *   private static final TraeColors Light = TraeLightColors.INSTANCE;
+     *   private static final TraeColors Dark  = TraeDarkColors.INSTANCE;
+     *   public TraeColors getLight() { return Light; }
+     *   public TraeColors getDark()  { return Dark;  }
      *
-     * 所以无论 ThemeManager、Configuration、AppCompat 怎么设置，
-     * Compose 界面永远拿 light 色板。必须直接改这个函数的入参。
+     * TraeLightColors / TraeDarkColors 都继承同一个抽象类 TraeColors，类型完全兼容。
+     * 所以只要把 Light 换成 Dark，无论调用方传 true 还是 false、
+     * 有没有被内联、走哪条取色路径，最终拿到的都是深色板。
      *
-     * 签名：(Z, Lkotlin/jvm/functions/Function2;, Landroidx/compose/runtime/Composer;, II)V
-     * args 里只有前两个是业务参数，后三个是编译器注入的 composer/flags，
-     * 所以只改 args[0]。
+     * 同时做两件事，互为保险：
+     *   1. 直接替换静态字段 Light = Dark 实例（覆盖"字段被直接读"的情况）
+     *   2. hook getLight() 恒返回 Dark（覆盖"方法未被内联且早于字段替换被调用"的情况）
      */
     private fun hookComposeDarkTheme(cl: ClassLoader) {
-        val composerCls = runCatching {
-            XposedHelpers.findClass("androidx.compose.runtime.Composer", cl)
+        val tokensCls = runCatching {
+            XposedHelpers.findClass(CLS_COLOR_TOKENS, cl)
         }.getOrNull()
-        if (composerCls == null) {
-            XposedBridge.log("$TAG: composer class not found, skip compose dark hook")
+        if (tokensCls == null) {
+            XposedBridge.log("$TAG: palette class not found")
             return
         }
+
+        // 方式一（最强）：直接把静态字段 Light 改成 Dark 实例。
+        // 这样即使 getLight() 被内联进调用方、读的是字段本身，也一律拿到深色板。
+        runCatching {
+            val dark = XposedHelpers.getStaticObjectField(tokensCls, "Dark")
+            if (dark != null) {
+                XposedHelpers.setStaticObjectField(tokensCls, "Light", dark)
+                XposedBridge.log("$TAG: Light field replaced by Dark")
+            }
+        }.onFailure { XposedBridge.log("$TAG: palette field swap skipped -> ${it.message}") }
+
+        // 方式二（冗余保险）：getLight() 恒返回 Dark。
+        // 部分路径可能在字段替换前就缓存了旧引用，这里再兜一层。
         runCatching {
             XposedHelpers.findAndHookMethod(
-                CLS_COMPOSE_TOKENS, cl, "TraeDesignTheme",
-                java.lang.Boolean.TYPE,
-                kotlin.jvm.functions.Function2::class.java,
-                composerCls,
-                java.lang.Integer.TYPE,
-                java.lang.Integer.TYPE,
+                tokensCls, "getLight",
                 object : XC_MethodHook() {
-                    override fun beforeHookedMethod(param: MethodHookParam) {
-                        param.args[0] = true
+                    override fun afterHookedMethod(param: MethodHookParam) {
+                        val dark = XposedHelpers.getStaticObjectField(
+                            param.method.declaringClass, "Dark",
+                        )
+                        if (dark != null) param.result = dark
                     }
                 },
             )
-            XposedBridge.log("$TAG: compose dark theme hook installed")
-        }.onFailure { XposedBridge.log("$TAG: compose dark hook skipped -> ${it.message}") }
+            XposedBridge.log("$TAG: getLight -> Dark hook installed")
+        }.onFailure { XposedBridge.log("$TAG: palette getter hook skipped -> ${it.message}") }
     }
 
     /**
