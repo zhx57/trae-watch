@@ -48,23 +48,25 @@ jobs:
           SIGNING_STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
           SIGNING_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
           SIGNING_KEY_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
-        run: gradle :app:assembleRelease --no-daemon --stacktrace
+        run: gradle :app:assembleRelease :xposed:assembleRelease --no-daemon --stacktrace
 
       - name: Verify signature fingerprint
         run: |
-          APK=$(find app/build/outputs/apk/release -name "*.apk" | head -1)
-          echo "APK: $APK"
-          keytool -printcert -jarfile "$APK" | grep -E "Owner|SHA256" || true
+          for APK in $(find app/build/outputs/apk/release xposed/build/outputs/apk/release -name "*.apk"); do
+            echo "== $APK"
+            keytool -printcert -jarfile "$APK" | grep -E "Owner|SHA256" || true
+          done
 
       - name: Rename APK
         run: |
           mkdir -p out
           find app/build/outputs/apk/release -name "*.apk" -exec cp {} out/trae-watch.apk \;
+          find xposed/build/outputs/apk/release -name "*.apk" -exec cp {} out/trae-thinking-xposed.apk \;
           ls -lh out/
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: trae-watch-apk
-          path: out/trae-watch.apk
+          path: out/*.apk
           retention-days: 30

@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 模块作用域：只注入 TRAE -->
+    <string-array name="xposed_scope">
+        <item>com.bytedance.trae.cn</item>
+    </string-array>
+</resources>
