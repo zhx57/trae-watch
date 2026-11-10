@@ -564,7 +564,15 @@ class TraeModelPatch : IXposedHookLoadPackage {
                 object : XC_MethodHook() {
                     override fun afterHookedMethod(param: MethodHookParam) {
                         val v = param.thisObject as? android.view.View ?: return
+                        // 同步先处理一遍（id 精确匹配的立刻生效），
+                        // 再 post 到下一帧补一次 —— 那时布局已完成，v.width 可用，
+                        // 才能识别 ConstraintLayout match_constraint 那种 width=0 的满宽容器。
                         runCatching { processView(v) }
+                        // 只有带 shape 背景的才需要等布局完成再判一次，避免列表里
+                        // 每个 View 都往消息队列塞一个任务。
+                        if (v.background is android.graphics.drawable.GradientDrawable) {
+                            runCatching { v.post { runCatching { processView(v) } } }
+                        }
                     }
                 },
             )
@@ -617,8 +625,19 @@ class TraeModelPatch : IXposedHookLoadPackage {
         val bg = v.background as? android.graphics.drawable.GradientDrawable ?: return
         val lp = v.layoutParams ?: return
         val screenW = v.resources.displayMetrics.widthPixels
+        // 「横向铺满」的判定：
+        //   1) MATCH_PARENT（-1）
+        //   2) 显式写死的宽像素 > 屏幕 80%
+        //   3) 已经完成布局，实测宽度 >= 屏幕 80%
+        //      —— bottom_sheet_skills.xml 的 title_bar 用的是 ConstraintLayout
+        //         的 match_constraint 写法（width=0 + 左右约束），layoutParams.width
+        //         是 0，只有 layout 之后的 v.width 才是屏幕宽。之前只用
+        //         layoutParams 判断，把它整个漏掉了，所以技能菜单上半块一直白。
+        //         模块没有 constraintlayout 依赖，无法引用那个 LayoutParams 类，
+        //         因此统一靠 v.width 兜底，onAttachedToWindow 里已 post 到布局之后。
         val wide = lp.width == android.view.ViewGroup.LayoutParams.MATCH_PARENT ||
-            lp.width > screenW * 0.8f
+            lp.width > screenW * 0.8f ||
+            v.width >= screenW * 0.8f
         if (!wide) return
         val csl = runCatching { bg.color }.getOrNull() ?: return
         if (csl.isStateful) return
@@ -730,14 +749,11 @@ class TraeModelPatch : IXposedHookLoadPackage {
         "iv_source_icon",
         "tv_direct_title",
         "tv_source_title",
-        // 输入框底部操作按钮：ic_input_bar_add / _microphone / _voice_chat
-        // 都是 PNG 位图，实测像素均值 RGB(37,37,37)，深色底上完全看不见。
+        // 输入框底部操作按钮：只列深黑图标。紫色语音键 / 黄色通行证键保持原色，
+        // 染白会破坏品牌色，所以不放进名单。
         "btn_plus",
         "btn_microphone",
-        "btn_chat_new",
         "btn_hold_to_talk",
-        "btn_express_pass",
-        "btn_send_text",
         // 插件 / 技能选择面板的空态类容器。
         // 注意：content_container / search_container 被 6 个布局共用，
         // 按名字全局改会误伤消息气泡，改为在 View 上判断父链里的 title_bar 来决定。
@@ -809,39 +825,17 @@ class TraeModelPatch : IXposedHookLoadPackage {
             // 加号菜单标题文字
             "tv_direct_title", "tv_source_title" -> (v as? android.widget.TextView)
                 ?.setTextColor(0xFFE5E5E5.toInt())
-            // 输入框底部操作按钮。这些图标是 PNG 位图（drawable-xxhdpi-v4/
-            // ic_input_bar_add.png 等），像素均值 RGB(37,37,37)，在深色底上不可见。
-            // 发送按钮有三态图：
-            //   ic_input_arrow_up.png         紫色 (82,71,228)   可用，不动
-            //   ic_input_arrow_up_enable.png  深灰 (63,65,69)    深色底上不可见
-            //   ic_input_arrow_up_disable.png 灰蓝 (87,102,121)  可接受
-            // btn_send_text 在可用态会切到 _enable 那张，所以也要一起提亮。
-            "btn_plus", "btn_microphone", "btn_chat_new",
-            "btn_hold_to_talk", "btn_express_pass" -> (v as? android.widget.ImageView)
-                ?.setColorFilter(0xFFE5E5E5.toInt())
-            "btn_send_text" -> paintSendButton(v)
-        }
-    }
-
-    /**
-     * 发送按钮单独处理。
-     *
-     * 它是个 ImageView，src 会随可用状态在三张 png 之间切换：
-     *   ic_input_arrow_up.png         紫色   —— 原生可读，保持品牌色
-     *   ic_input_arrow_up_enable.png  深灰   —— 深色底上不可见，必须提亮
-     *   ic_input_arrow_up_disable.png 灰蓝   —— 可接受
-     *
-     * 光看 intrinsicWidth 不可靠（会按屏幕密度缩放），所以这里什么都不做，
-     * 改由 hookSendIconResources() 在 setImageResource 时按资源 id 精确上色。
-     */
-    private fun paintSendButton(v: android.view.View) {
-        // XML 里 android:src 不走 setImageResource，首帧图标 hook 不到。
-        // 这里统一处理：紫色态本来就能看见，只有深灰 enable 态需要提亮。
-        // 判断依据用 ImageView 当前 drawable 的 pixel 采样不现实，
-        // 改为「只要 colorFilter 为空就先提亮，等状态变了 setImageResource hook 会再修正」。
-        val iv = v as? android.widget.ImageView ?: return
-        if (iv.colorFilter == null) {
-            iv.setColorFilter(0xFFE5E5E5.toInt())
+            // 输入框底部操作按钮。只有真正是深色的那几张需要提亮：
+            //   ic_input_bar_add.png           (37,37,37) 深黑 -> 必须提亮
+            //   ic_input_bar_microphone.png    (37,37,37) 深黑 -> 必须提亮
+            //   ic_hold_to_talk.png            (29,30,29) 深黑 -> 必须提亮
+            // 下面几个本来就是彩色，染白会破坏品牌色，绝不能动：
+            //   ic_input_bar_voice_chat.png    (83,72,228) 紫色
+            //   ic_input_bar_express_999.png   (207,175,30) 黄色
+            //   ic_input_bar_use_express_pass  (17,199,121) 绿色
+            //   ic_input_arrow_up.png          (82,71,228) 紫色
+            "btn_plus", "btn_microphone", "btn_hold_to_talk" ->
+                (v as? android.widget.ImageView)?.setColorFilter(0xFFE5E5E5.toInt())
         }
     }
 
@@ -856,11 +850,12 @@ class TraeModelPatch : IXposedHookLoadPackage {
         // 注意：这里只列深灰/近黑的图标。
         val recolor = HashMap<Int, Int>()
 
-        // 图标资源名 -> id 在运行时按名字解析，避免硬编码出错
+        // 图标资源名 -> id 在运行时按名字解析，避免硬编码出错。
+        // 只列深色图标。ic_input_bar_voice_chat 是紫色 (83,72,228)，
+        // ic_input_arrow_up 是紫色 (82,71,228)，都不需要处理。
         val names = listOf(
             "ic_input_bar_add",
             "ic_input_bar_microphone",
-            "ic_input_bar_voice_chat",
             "ic_hold_to_talk",
             "ic_input_arrow_up_enable",
         )
