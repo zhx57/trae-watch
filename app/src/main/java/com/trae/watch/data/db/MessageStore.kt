@@ -15,7 +15,7 @@ import android.util.Log
  * 降级策略：
  *  1. 第一次失败 -> 删库重建，重试一次
  *  2. 仍失败 -> 标记 broken，此后所有读写直接返回空，不再访问磁盘
- *  3. 写失败不影响内存里的消息列表，UI 仍可正常显示远端拉取的内容
+ *  3. 写失败不影响内存里的消息列表，UI 仍可显示远端拉取的内容
  */
 class MessageStore(private val db: Db) {
 
@@ -24,14 +24,13 @@ class MessageStore(private val db: Db) {
     }
 
     /** 统一的执行包装：失败自愈一次，再失败就降级 */
-    private fun <T> guarded(block: () -> T, fallback: T): T {
+    private fun <T> guard(fallback: T, block: () -> T): T {
         if (db.isBroken) return fallback
         return try {
             block()
         } catch (e: Throwable) {
             Log.w(TAG, "db access failed: ${e.javaClass.simpleName} ${e.message}")
-            val recovered = db.recover()
-            if (recovered) {
+            if (db.recover()) {
                 try {
                     return block()
                 } catch (e2: Throwable) {
@@ -45,7 +44,7 @@ class MessageStore(private val db: Db) {
 
     fun upsertConversations(list: List<Conversation>) {
         if (list.isEmpty()) return
-        guarded(Unit) {
+        guard(Unit) {
             val w = db.writableDatabase
             w.beginTransaction()
             try {
@@ -69,7 +68,7 @@ class MessageStore(private val db: Db) {
         }
     }
 
-    fun conversations(limit: Int = 30): List<Conversation> = guarded(emptyList()) {
+    fun conversations(limit: Int = 30): List<Conversation> = guard(emptyList()) {
         val out = ArrayList<Conversation>(limit)
         db.readableDatabase.rawQuery(
             "SELECT id,title,status,updated_at,unread,last_snippet FROM ${Db.T_CONV} ORDER BY updated_at DESC LIMIT ?",
@@ -91,7 +90,7 @@ class MessageStore(private val db: Db) {
         out
     }
 
-    fun conversation(id: String): Conversation? = guarded(null) {
+    fun conversation(id: String): Conversation? = guard<Conversation?>(null) {
         var result: Conversation? = null
         db.readableDatabase.rawQuery(
             "SELECT id,title,status,updated_at,unread,last_snippet FROM ${Db.T_CONV} WHERE id=?",
@@ -113,7 +112,7 @@ class MessageStore(private val db: Db) {
 
     fun upsertMessages(list: List<Message>) {
         if (list.isEmpty()) return
-        guarded(Unit) {
+        guard(Unit) {
             val w = db.writableDatabase
             w.beginTransaction()
             try {
@@ -140,7 +139,7 @@ class MessageStore(private val db: Db) {
     }
 
     /** 只取最近 N 条，避免低端机一次性加载全量 */
-    fun messages(convId: String, limit: Int = 40): List<Message> = guarded(emptyList()) {
+    fun messages(convId: String, limit: Int = 40): List<Message> = guard(emptyList()) {
         val out = ArrayList<Message>(limit)
         db.readableDatabase.rawQuery(
             "SELECT id,conv_id,seq,role,type,text,status,created_at FROM ${Db.T_MSG} " +
@@ -167,14 +166,14 @@ class MessageStore(private val db: Db) {
     }
 
     fun markRead(convId: String) {
-        guarded(Unit) {
+        guard(Unit) {
             val v = ContentValues().apply { put("unread", 0) }
             db.writableDatabase.update(Db.T_CONV, v, "id=?", arrayOf(convId))
         }
     }
 
     fun deleteConversation(convId: String) {
-        guarded(Unit) {
+        guard(Unit) {
             val w = db.writableDatabase
             w.beginTransaction()
             try {
