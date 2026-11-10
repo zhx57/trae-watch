@@ -27,7 +27,16 @@ data class ConvItem(
     val pinned: Boolean = false,
 )
 
-data class ModelItem(val name: String, val displayName: String, val isDefault: Boolean)
+data class ModelItem(
+    val name: String,
+    val displayName: String,
+    val isDefault: Boolean,
+    /** 非空表示用户自建模型（custom_openai_compatible / deepseek 等） */
+    val provider: String = "",
+)
+
+/** 模型列表来源：云端账号模型 / 本机 CLI 模型（含本地自建） */
+enum class ModelScope { CLOUD, LOCAL_CLI }
 
 class ApiClient(
     private val tokenProvider: () -> String,
@@ -150,27 +159,54 @@ class ApiClient(
 
     // ---------- 模型 ----------
 
-    fun modelsRaw(): String? {
-        val r = get(Api.HOST_AI, Api.PATH_MODELS)
+    /**
+     * 模型列表。
+     *
+     * 实测结论（2026-11）：
+     *  1. /api/remote/v1/models 只返回账号级云端模型，看不到本机自建模型
+     *     （hy4free、deepseek//xxx 等都不会出现）
+     *  2. 本机 CLI 模型必须走 /api/solo_hub/v1/clis/models，且必须带
+     *     functions=solo_coder，否则返回空 list
+     *  3. force_refresh=true 才会拿到最新（Kimi K2.5、GLM-5.1 等）而不是旧缓存
+     *  4. 返回结构是 {data:{list:[{function, models:[...]}]}}，按 function 分组
+     *
+     * @param cliId 在线 CLI 的 id；为空时只能取云端模型
+     */
+    fun modelsRaw(cliId: String = "", forceRefresh: Boolean = true): String? {
+        val r = if (cliId.isNotBlank()) {
+            get(
+                Api.HOST_AI,
+                "${Api.PATH_CLI_MODELS}?cli_id=$cliId" +
+                    "&functions=solo_coder&force_refresh=$forceRefresh",
+            )
+        } else {
+            get(Api.HOST_AI, "${Api.PATH_MODELS}?functions=solo_coder")
+        }
         return if (r.ok && r.body.isNotBlank()) r.body else null
     }
 
+    /** 解析模型列表；结构为 data.list[].models[]，只取 solo_coder 分组 */
     fun parseModels(raw: String): List<ModelItem> = try {
         val root = json.parseToJsonElement(raw).jsonObject
         val list = root["data"]?.jsonObject?.get("list") as? JsonArray ?: return emptyList()
         val out = ArrayList<ModelItem>()
+        val seen = HashSet<String>()
         for (g in list) {
             val go = g as? JsonObject ?: continue
-            if (go["function"]?.s() != "solo_coder") continue
+            val fn = go["function"]?.s()
+            // 没写 function 时也接受，避免接口不带该字段时整体为空
+            if (fn != null && fn != "solo_coder") continue
             val ms = go["models"] as? JsonArray ?: continue
             for (m in ms) {
                 val mo = m as? JsonObject ?: continue
                 val name = mo["name"]?.s() ?: continue
+                if (!seen.add(name)) continue
                 out.add(
                     ModelItem(
                         name = name,
                         displayName = mo["display_name"]?.s() ?: name,
                         isDefault = mo["is_default"]?.s() == "true",
+                        provider = mo["provider"]?.s() ?: "",
                     )
                 )
             }
@@ -180,14 +216,53 @@ class ApiClient(
         emptyList()
     }
 
-    fun models(): List<ModelItem> = modelsRaw()?.let { parseModels(it) } ?: emptyList()
+    /** 在线 CLI 列表，用于取本机模型。返回 (cliId, cliName) */
+    fun onlineClis(): List<Pair<String, String>> {
+        val r = get(Api.HOST_AI, Api.PATH_CLIS)
+        if (!r.ok) return emptyList()
+        return try {
+            val arr = json.parseToJsonElement(r.body).jsonObject["data"]?.jsonObject
+                ?.get("clis") as? JsonArray ?: return emptyList()
+            arr.mapNotNull { el ->
+                val o = el as? JsonObject ?: return@mapNotNull null
+                if (o["status"]?.s() != "online") return@mapNotNull null
+                val id = o["id"]?.s() ?: return@mapNotNull null
+                id to (o["name"]?.s() ?: "本机")
+            }
+        } catch (e: Exception) {
+            emptyList()
+        }
+    }
 
     // ---------- 消息 ----------
 
-    /** 正确参数：conversation_id + before_limit/after_limit（实测） */
-    fun fetchMessagesRaw(convId: String, limit: Int = 40): String? {
-        val r = get(Api.HOST_AI, "${Api.PATH_MSG_ANCHOR}?conversation_id=$convId&before_limit=$limit&after_limit=0")
+    /**
+     * 历史消息。
+     *
+     * 实测硬约束：
+     *  - before_limit 合法上限是 20，传 30/40 会直接 400
+     *    （code 4001 "validating: expr_path=BeforeLimit, cause=invalid"）
+     *  - after_limit 任意非负值都可，跟 before_limit 组合时同样受上限约束
+     *  - 不传 anchor_created_at_ms 时从最新往旧取
+     */
+    fun fetchMessagesRaw(convId: String, limit: Int = 20): String? {
+        val safe = limit.coerceIn(1, 20)
+        val r = get(
+            Api.HOST_AI,
+            "${Api.PATH_MSG_ANCHOR}?conversation_id=$convId" +
+                "&before_limit=$safe&after_limit=0&include_anchor=false",
+        )
         return if (r.ok && r.body.isNotBlank()) r.body else null
+    }
+
+    /** 带诊断信息的历史消息请求，便于把真实错误码展示给用户 */
+    fun fetchMessages(convId: String, limit: Int = 20): Result {
+        val safe = limit.coerceIn(1, 20)
+        return get(
+            Api.HOST_AI,
+            "${Api.PATH_MSG_ANCHOR}?conversation_id=$convId" +
+                "&before_limit=$safe&after_limit=0&include_anchor=false",
+        )
     }
 
     // ---------- 发消息 ----------

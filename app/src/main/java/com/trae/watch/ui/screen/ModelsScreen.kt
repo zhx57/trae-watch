@@ -122,15 +122,20 @@ fun ModelsScreen(
                                     overflow = TextOverflow.Ellipsis,
                                 )
                             },
-                            supportingContent = if (m.isDefault) {
-                                {
+                            supportingContent = {
+                                val tag = when {
+                                    m.isDefault -> "默认"
+                                    m.provider.isNotBlank() -> "自建 · ${m.provider}"
+                                    else -> ""
+                                }
+                                if (tag.isNotBlank()) {
                                     Text(
-                                        text = "默认",
+                                        text = tag,
                                         style = MaterialTheme.typography.labelSmall,
                                         color = cs.onSurfaceVariant,
                                     )
                                 }
-                            } else null,
+                            },
                         )
                         if (m != models.last()) {
                             HorizontalDivider(

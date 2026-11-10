@@ -125,8 +125,29 @@ class MainViewModel(private val graph: AppGraph) : ViewModel() {
         viewModelScope.launch(Dispatchers.IO) { refreshModelsInternal() }
     }
 
+    /**
+     * 刷新模型列表。
+     *
+     * 必须优先用「在线 CLI」接口：只有 /clis/models 才包含用户本机自建模型
+     * （hy4free、deepseek//xxx 之类），以及最新的 Kimi/GLM 等。
+     * /api/remote/v1/models 只给账号级云端模型，会显示成旧列表。
+     *
+     * 若本机 CLI 全离线则回落到云端接口，避免模型页空着。
+     */
     private suspend fun refreshModelsInternal() {
-        val raw = runCatching { graph.api.modelsRaw() }.getOrNull()
+        val clis = runCatching { graph.api.onlineClis() }.getOrDefault(emptyList())
+        val onlineCli = clis.firstOrNull()
+
+        var raw = onlineCli?.let { (id, _) ->
+            runCatching { graph.api.modelsRaw(cliId = id, forceRefresh = true) }.getOrNull()
+        }
+        var source = onlineCli?.second ?: ""
+
+        if (raw == null) {
+            raw = runCatching { graph.api.modelsRaw(forceRefresh = true) }.getOrNull()
+            source = if (clis.isEmpty()) "本机未连接，仅显示云端模型" else ""
+        }
+
         if (raw == null) {
             withContext(Dispatchers.Main) {
                 _state.value = _state.value.copy(
@@ -156,7 +177,7 @@ class MainViewModel(private val graph: AppGraph) : ViewModel() {
                 models = list,
                 selectedModel = selected,
                 modelsLoading = false,
-                modelsError = "",
+                modelsError = source,
                 modelsUpdatedAt = System.currentTimeMillis(),
             )
         }
@@ -206,10 +227,10 @@ class MainViewModel(private val graph: AppGraph) : ViewModel() {
                         _state.value = _state.value.copy(messages = local)
                     }
                 }
-                // 拉远端历史（用 conversation_id + before_limit，实测正确参数）
-                val raw = runCatching { graph.api.fetchMessagesRaw(c.id) }.getOrNull()
-                if (raw != null) {
-                    val parsed = MessageParser.parse(c.id, raw)
+                // 拉远端历史（before_limit 实测上限 20，接口内部已 clamp）
+                val msgResult = runCatching { graph.api.fetchMessages(c.id) }.getOrNull()
+                if (msgResult != null && msgResult.ok) {
+                    val parsed = MessageParser.parse(c.id, msgResult.body)
                     if (parsed.isNotEmpty()) {
                         graph.store.upsertMessages(parsed)
                         // 写入失败时直接展示解析结果，不依赖回读
@@ -222,9 +243,17 @@ class MainViewModel(private val graph: AppGraph) : ViewModel() {
                 }
                 withContext(Dispatchers.Main) {
                     if (_state.value.messages.isEmpty()) {
-                        _state.value = _state.value.copy(
-                            error = if (raw == null) "历史消息请求失败" else "该会话暂无消息",
-                        )
+                        val detail = when {
+                            msgResult == null -> "历史消息请求异常"
+                            msgResult.code == 401 || msgResult.code == 403 -> "登录已过期，请重新配对"
+                            !msgResult.ok -> {
+                                val biz = msgResult.bizMessage
+                                if (biz.isNotBlank()) "历史消息失败：$biz"
+                                else "历史消息失败：HTTP ${msgResult.code}"
+                            }
+                            else -> "该会话暂无消息"
+                        }
+                        _state.value = _state.value.copy(error = detail)
                     }
                 }
             } catch (e: Throwable) {
@@ -444,14 +473,15 @@ class MainViewModel(private val graph: AppGraph) : ViewModel() {
                     continue
                 }
                 val parsed = MessageParser.parse(convId, raw)
-                val before = _state.value.messages.size
                 if (parsed.isNotEmpty()) {
                     graph.store.upsertMessages(parsed)
-                    val all = graph.store.messages(convId)
+                    // 库不可用时直接用远端结果，避免轮询把已有消息清空
+                    val all = graph.store.messages(convId).ifEmpty { parsed }
+                    val changed = all.size != _state.value.messages.size
                     withContext(Dispatchers.Main) {
                         _state.value = _state.value.copy(messages = all, sseState = SseState.CONNECTED)
                     }
-                    if (all.size != before) idle = 0 else idle++
+                    if (changed) idle = 0 else idle++
                 } else {
                     idle++
                 }

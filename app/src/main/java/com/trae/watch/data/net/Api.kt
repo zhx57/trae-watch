@@ -12,6 +12,8 @@ object Api {
     const val PATH_CLIS = "/api/solo_hub/v1/clis"
     const val PATH_ONBOARDING = "/api/solo_hub/v1/user/onboarding/state"
     const val PATH_MODELS = "/api/remote/v1/models"
+    /** 本机 CLI 模型（含用户自建模型），必须带 functions 与 force_refresh */
+    const val PATH_CLI_MODELS = "/api/solo_hub/v1/clis/models"
     const val PATH_CONVERSATIONS = "/api/solo_hub/v1/conversations"
     const val PATH_CHAT_SESSIONS = "/api/remote/v1/chat_sessions"
     const val PATH_MSG_ANCHOR = "/api/solo_hub/v1/conversations/messages/anchor"
