@@ -554,15 +554,17 @@ class TraeModelPatch : IXposedHookLoadPackage {
             XposedBridge.log("$TAG: view tree dark hook installed")
         }.onFailure { XposedBridge.log("$TAG: view tree hook skipped -> ${it.message}") }
 
-        // Fragment 的 inflate 不走 Activity.onContentChanged，再挂一个 View 层级监听兜底：
-        // 任何 View attach 到窗口时扫一遍。
+        // 每个 View 挂载到窗口时处理它自己。
+        // 不遍历子树：onAttachedToWindow 对每个 View 都会触发，处理自己就是 O(n)，
+        // 而遍历子树会变成 O(n^2)。而且 Dialog / BottomSheet 的内容也能被覆盖到，
+        // 因为它们同样会 attach 到自己的 Window。
         runCatching {
             XposedHelpers.findAndHookMethod(
                 android.view.View::class.java, "onAttachedToWindow",
                 object : XC_MethodHook() {
                     override fun afterHookedMethod(param: MethodHookParam) {
                         val v = param.thisObject as? android.view.View ?: return
-                        runCatching { applyDarkToTree(v) }
+                        runCatching { processView(v) }
                     }
                 },
             )
@@ -585,11 +587,47 @@ class TraeModelPatch : IXposedHookLoadPackage {
                     v.getChildAt(i)?.let { stack.add(it) }
                 }
             }
-            if (v.id == android.view.View.NO_ID) continue
-            val name = runCatching { v.resources.getResourceEntryName(v.id) }.getOrNull() ?: continue
-            if (!darkViewNames.contains(name)) continue
-            runCatching { paintDark(v, name) }
+            runCatching { processView(v) }
         }
+    }
+
+    /** 处理单个 View：优先按 id 名精确改，否则尝试白色底板识别 */
+    private fun processView(v: android.view.View) {
+        val name = if (v.id == android.view.View.NO_ID) null
+        else runCatching { v.resources.getResourceEntryName(v.id) }.getOrNull()
+        if (name != null && darkViewNames.contains(name)) {
+            paintDark(v, name)
+            return
+        }
+        paintWhiteSurface(v)
+    }
+
+    /**
+     * 白色底板识别。
+     *
+     * 【关键】必须在 onAttachedToWindow 之后调用，因为那时 layoutParams 已经设置好。
+     * 之前放在 View.setBackground 的 hook 里，而 XML inflate 时 setBackground 是在
+     * View 构造函数内部执行的，那一刻 layoutParams 还是 null，所以全部被跳过。
+     *
+     * 判定：GradientDrawable + 纯色接近不透明白 + layoutParams 满宽。
+     * 满足就改色，用 constantState.newDrawable().mutate() 复制一份再 setColor，
+     * 这样圆角和描边都保留，也不会污染其它共享同一 ConstantState 的 View。
+     */
+    private fun paintWhiteSurface(v: android.view.View) {
+        val bg = v.background as? android.graphics.drawable.GradientDrawable ?: return
+        val lp = v.layoutParams ?: return
+        val screenW = v.resources.displayMetrics.widthPixels
+        val wide = lp.width == android.view.ViewGroup.LayoutParams.MATCH_PARENT ||
+            lp.width > screenW * 0.8f
+        if (!wide) return
+        val csl = runCatching { bg.color }.getOrNull() ?: return
+        if (csl.isStateful) return
+        if (!isNearOpaqueWhite(csl.defaultColor)) return
+        val copy = runCatching { bg.constantState?.newDrawable()?.mutate() }.getOrNull() ?: return
+        val gd = copy as? android.graphics.drawable.GradientDrawable ?: return
+        gd.setColor(0xFF1E1E1E.toInt())
+        v.background = gd
+        XposedBridge.log("$TAG: white surface darkened id=${v.id}")
     }
 
     /**
