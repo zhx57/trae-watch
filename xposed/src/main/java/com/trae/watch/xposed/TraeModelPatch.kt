@@ -124,6 +124,11 @@ class TraeModelPatch : IXposedHookLoadPackage {
             hookRemoteInputCapabilities(lpparam.classLoader)
             hookInputRows(lpparam.classLoader)
             hookDarkMode(lpparam.classLoader)
+            // 最后一层兜底：Activity 内容就绪后直接遍历 View 树刷成深色。
+            // 前面那些资源层 hook 依赖的东西太多（资源解析时机、night 变体是否
+            // 真的被选中、Compose 是否绕过 XML），View 树后处理不依赖任何前提，
+            // 只要视图显示出来就一定能改到。
+            hookDarkModeViewTree(lpparam.classLoader)
             hookComposeDarkTheme(lpparam.classLoader)
             hookComposeContextWrapper(lpparam.classLoader)
             // init() 可能在 hook 装上前就跑过了，这里主动补一刀
@@ -328,7 +333,37 @@ class TraeModelPatch : IXposedHookLoadPackage {
             )
         }.onFailure { XposedBridge.log("$TAG: cfg dark hook skipped -> ${it.message}") }
 
+        // 5.5) 【真正的根因】TRAE 的 TraeCommonAppCompatActivity 重写了
+        //      applyOverrideConfiguration()，里面重建了一个只带 locale 的
+        //      Configuration 对象，把 uiMode 的 night 位抹成默认值。
+        //      这导致 Activity 的 Resources 永远按 default 配置解析 ——
+        //      即便 AppCompatDelegate 全局模式是 NIGHT_YES，
+        //      night 变体也永远选不中，所有 XML 页面因此全白。
+        //
+        //      hook 在它调用 super 之前，把 night 位补回去。
+        runCatching {
+            XposedHelpers.findAndHookMethod(
+                android.content.ContextThemeWrapper::class.java,
+                "applyOverrideConfiguration",
+                android.content.res.Configuration::class.java,
+                object : XC_MethodHook() {
+                    override fun beforeHookedMethod(param: MethodHookParam) {
+                        val cfg = param.args[0] as? android.content.res.Configuration
+                            ?: return
+                        cfg.uiMode = (cfg.uiMode and
+                            android.content.res.Configuration.UI_MODE_NIGHT_MASK.inv()) or
+                            android.content.res.Configuration.UI_MODE_NIGHT_YES
+                    }
+                },
+            )
+            XposedBridge.log("$TAG: applyOverrideConfiguration night bit restored")
+        }.onFailure { XposedBridge.log("$TAG: overrideConfiguration hook skipped -> ${it.message}") }
+
         // 6) 补齐 TRAE 自己漏做 night 变体的颜色资源
+        //    注意：这一层依赖资源系统真的按 night 配置解析。TRAE 的
+        //    applyOverrideConfiguration() 会重建 Configuration（只保留 locale），
+        //    抹掉 uiMode 的 night 位，所以这里多数时候拿到的还是浅色值。
+        //    真正兜底的是 hookDarkModeViewTree()，它在 View 树上直接改。
         hookMissingNightColors()
     }
 
@@ -469,6 +504,143 @@ class TraeModelPatch : IXposedHookLoadPackage {
         runCatching {
             XposedHelpers.setStaticIntField(themeCls, "darkMode", MODE_NIGHT_YES)
             XposedHelpers.setStaticBooleanField(themeCls, "isDarkMode", true)
+        }
+    }
+
+    /**
+     * H. View 树后处理 —— 不依赖任何资源解析路径的兜底方案。
+     *
+     * 【为什么之前的方案全都没生效】
+     * 前几版分别尝试过：hook Compose 色板、hook AppCompatDelegate、hook ThemeManager、
+     * hook Resources.getDrawable。四个方向都依赖同一个前提 —— 资源系统真的按 night
+     * 配置去解析了。但 TRAE 的 TraeCommonAppCompatActivity 在 applyOverrideConfiguration()
+     * 里重建了 Configuration（只保留 locale），把 uiMode 的 night 位抹掉了，
+     * 所以即便 AppCompatDelegate 的全局模式是 NIGHT_YES，Activity 的 Resources
+     * 拿到的仍是 default 配置，night 变体永远选不中。
+     *
+     * 这解释了为什么"设置页是黑的、其他都是白的"：设置页是 Compose，走色板对象；
+     * 其余原生页面走 XML 资源，全部拿到浅色值。
+     *
+     * 【这一版】
+     * 直接在 Activity 的窗口内容就绪之后遍历 View 树，按 view id 精确刷色。
+     * 不关心资源是怎么来的，只关心最终显示的是什么。
+     *
+     * 只处理用户明确反馈的三处：
+     *   1) main_input_area / full_input_container 输入区 —— 白底
+     *   2) title_bar_mark 顶部白条 —— 浅色渐变遮罩
+     *   3) ll_message_container 用户气泡 + tv_message 文字 —— 黑底黑字
+     */
+    private fun hookDarkModeViewTree(cl: ClassLoader) {
+        // 每次 Activity 内容就绪都扫一遍。用 onContentChanged 而不是 onCreate，
+        // 因为 xml 真正 attach 到窗口之后才有完整 View 树，且 Fragment 场景也覆盖。
+        val scan = object : XC_MethodHook() {
+            override fun afterHookedMethod(param: MethodHookParam) {
+                val activity = param.thisObject as? android.app.Activity ?: return
+                val decor = activity.window?.decorView ?: return
+                runCatching { applyDarkToTree(decor) }
+                    .onFailure { XposedBridge.log("$TAG: view tree scan failed -> ${it.message}") }
+            }
+        }
+
+        runCatching {
+            XposedHelpers.findAndHookMethod(
+                android.app.Activity::class.java, "onContentChanged", scan,
+            )
+            XposedBridge.log("$TAG: view tree dark hook installed")
+        }.onFailure { XposedBridge.log("$TAG: view tree hook skipped -> ${it.message}") }
+
+        // Fragment 的 inflate 不走 Activity.onContentChanged，再挂一个 View 层级监听兜底：
+        // 任何 View attach 到窗口时扫一遍。
+        runCatching {
+            XposedHelpers.findAndHookMethod(
+                android.view.View::class.java, "onAttachedToWindow",
+                object : XC_MethodHook() {
+                    override fun afterHookedMethod(param: MethodHookParam) {
+                        val v = param.thisObject as? android.view.View ?: return
+                        runCatching { applyDarkToTree(v) }
+                    }
+                },
+            )
+        }.onFailure { XposedBridge.log("$TAG: attach hook skipped -> ${it.message}") }
+    }
+
+    /**
+     * 遍历 View 树，按 id 名精确改色。
+     *
+     * 每次都重新处理，不去重。原因：RecyclerView 复用时 item 的 bind 会重置属性，
+     * 去重会导致第二次显示时又变回白色。
+     */
+    private fun applyDarkToTree(root: android.view.View) {
+        val stack = ArrayList<android.view.View>(32)
+        stack.add(root)
+        while (stack.isNotEmpty()) {
+            val v = stack.removeAt(stack.size - 1)
+            if (v is android.view.ViewGroup) {
+                for (i in 0 until v.childCount) {
+                    v.getChildAt(i)?.let { stack.add(it) }
+                }
+            }
+            if (v.id == android.view.View.NO_ID) continue
+            val name = runCatching { v.resources.getResourceEntryName(v.id) }.getOrNull() ?: continue
+            if (!darkViewNames.contains(name)) continue
+            runCatching { paintDark(v, name) }
+        }
+    }
+
+    /** 需要处理的控件名 */
+    private val darkViewNames = setOf(
+        "full_input_container",
+        "main_input_area",
+        "title_bar_mark",
+        "ll_message_container",
+        "btn_scroll_to_bottom",
+    )
+
+    /** 按控件名执行深色改写 */
+    private fun paintDark(v: android.view.View, name: String) {
+        val density = v.resources.displayMetrics.density
+        when (name) {
+            // 输入区外层：真正的圆角背景层。原本走 trae_bg_input_bottom_layer，
+            // 该 drawable 的 solid 引用 overlay_l2（有 night 变体），但 TRAE 的
+            // applyOverrideConfiguration 抹掉了 uiMode，导致取到浅色值。
+            "full_input_container" -> {
+                v.background = android.graphics.drawable.GradientDrawable().apply {
+                    setShape(android.graphics.drawable.GradientDrawable.RECTANGLE)
+                    setColor(0xFF232323.toInt())
+                    cornerRadius = 28f * density
+                    setStroke((1f * density).toInt(), 0x33FFFFFF.toInt())
+                }
+            }
+            // 输入区上层：原本是 #B3FFFFFF 半透明白，直接去掉
+            "main_input_area" -> v.background = null
+            // 顶部渐变白条：整条隐藏
+            "title_bar_mark" -> v.visibility = android.view.View.GONE
+            // 用户气泡：深色圆角底 + 所有子 TextView 改成浅色文字
+            "ll_message_container" -> {
+                v.background = android.graphics.drawable.GradientDrawable().apply {
+                    setShape(android.graphics.drawable.GradientDrawable.RECTANGLE)
+                    setColor(0xFF333333.toInt())
+                    cornerRadius = 20f * density
+                }
+                recolorTexts(v, 0xFFE5E5E5.toInt())
+            }
+            // 回到底部按钮：白圆底改深色
+            "btn_scroll_to_bottom" -> {
+                v.background = android.graphics.drawable.GradientDrawable().apply {
+                    setShape(android.graphics.drawable.GradientDrawable.OVAL)
+                    setColor(0xFF2A2A2A.toInt())
+                }
+            }
+        }
+    }
+
+    /** 把子树里所有 TextView 的文字色刷成指定值 */
+    private fun recolorTexts(root: android.view.View, color: Int) {
+        if (root is android.widget.TextView) root.setTextColor(color)
+        if (root is android.view.ViewGroup) {
+            for (i in 0 until root.childCount) {
+                root.getChildAt(i)?.let { recolorTexts(it, color) }
+            }
         }
     }
 
