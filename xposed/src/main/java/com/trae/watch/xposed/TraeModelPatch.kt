@@ -335,80 +335,133 @@ class TraeModelPatch : IXposedHookLoadPackage {
     /**
      * G. 修复 TRAE 缺失 night 变体的硬编码颜色。
      *
-     * 实测 resources.arsc 与 drawable XML 后确认根因：
+     * 【上一版为什么无效】
+     * hook GradientDrawable.setColor() 是空转的。XML shape 的 <solid> 在
+     * GradientDrawable.inflate() 里被直接写进 mGradientState.mSolidColors 字段，
+     * 根本不调用 setColor()。所以那个 hook 一次都没命中 —— 输入框依然白。
      *
-     *  1) APK 里根本没有 drawable-night / color-night 目录（各 0 个文件），
-     *     而 res/drawable 下有 1212 个。所有 shape drawable 的背景都写死在浅色。
+     * 【这一版的做法】
+     * 换到 Resources 层：hook Resources.getDrawable() / getDrawableForDensity()，
+     * 拿到 Drawable 之后按「资源 id」精确替换。资源 id 与 drawable 的对应关系
+     * 是从 APK 的 res/layout 反查出来的，写死在下面。
      *
-     *  2) 输入框背景 res/drawable/trae_bg_conversation_input.xml 内容是：
-     *         <solid android:color="#B3FFFFFF"/>   ← 半透明白，硬编码
-     *     没有任何资源引用，所以切夜间也不会变。这就是"输入框是白的"。
-     *
-     *  3) 部分颜色资源只有浅色定义、无 night 变体：
-     *         0x7F050394 次级文字 / hint
-     *         0x7F050160 FAB backgroundTint
-     *
-     * 硬编码色无法通过资源系统覆盖，只能在 Drawable 创建后改它的 paint color。
-     * GradientDrawable.setColor() 是唯一稳定的入口。
+     * 同时修一个文字色问题：用户气泡 res/layout/trae_item_user_message.xml 里
+     * tv_message 的 textColor 是硬编码 #FF1A1A1A。气泡背景
+     * trae_bg_chat_bubble_sent 的 solid 走 trae_bg_bg_overlay_l1，有 night 变体
+     * 会变深，于是深色下黑底黑字。这必须在 TextView 上改，改 drawable 没用。
      */
     private fun hookMissingNightColors() {
-        // 【已删除两个错误的覆盖】
-        // 上一版我覆盖了这两个 ID，但反查资源名后发现判断全错：
-        //
-        //   0x7F050394 = trae_text_text_tertiary  三级文字，改成 #8E8E8E 会让正文偏灰
-        //   0x7F050160 = solo_task_fab_bg        FAB 背景，改成 #3A3A3A 后
-        //                                        所有浮动按钮（发送、新建）全变黑
-        //
-        // 这正是用户反馈「大量按钮颜色是黑的」的直接原因。
-        // 这两个资源虽然缺 night 变体，但原值在深色底上仍可辨认，
-        // 强行覆盖的副作用远大于收益，因此全部移除。
-        //
-        // 只保留输入框那条硬编码白色的修复，见下方。
+        // 资源 id -> 深色替换色（ARGB），用 ColorFilter 整体染色
+        val tintMap = HashMap<Int, Int>()
+        // 资源 id 集合：直接置为全透明（纯装饰性白底，隐藏后不影响布局）
+        val hideSet = HashSet<Int>()
 
-        // 输入框背景硬编码修复。
+        // ID 全部通过 resources.arsc 反查确认，见 _ids.py 的输出：
         //
-        // res/drawable/trae_bg_conversation_input.xml：
-        //   <solid android:color="#B3FFFFFF"/>    ← 半透明白，硬编码
-        //   <stroke android:width="1dip" android:color="#80FFFFFF"/>
-        // res/drawable/trae_bg_input_top_layer.xml：
-        //   <solid android:color="#B3FFFFFF"/>
+        //   0x7F070456  trae_bg_input_top_layer          <solid #B3FFFFFF> 输入框上层
+        //   0x7F070499  trae_bg_title_bar_mark_gradient  <gradient #FFF7F6F5 -> #00F7F6F5>
+        //   0x7F070479  trae_bg_scroll_to_bottom         <solid #FFFFFFFF> 回到底部按钮
         //
-        // 这两个 drawable 都没有 night 变体（APK 里 drawable-night 目录为空），
-        // 所以切夜间后它们仍是半透明白，叠在深色背景上就是那块白。
-        //
-        // 只精确匹配 0xB3FFFFFF 这一个值，不做范围判断，避免误伤气泡和品牌色。
+        // 前两个是纯白色的装饰层，深色下直接隐藏最干净：
+        //   输入框真正的外观由外层 full_input_container 的
+        //   trae_bg_input_bottom_layer 提供（solid 走 trae_bg_bg_overlay_l2，
+        //   有 night 变体，深色下是深灰，圆角 28dip 与描边都完整）。
+        //   顶部白条只是一条 24dip 高的渐隐遮罩，删掉不影响任何内容。
+        hideSet.add(0x7F070456)
+        hideSet.add(0x7F070499)
+
+        // 回到底部按钮本来是白圆底 + 深色箭头，深色下需要反过来
+        tintMap[0x7F070479] = 0xFF2A2A2A.toInt()
+
+        val hook = object : XC_MethodHook() {
+            override fun afterHookedMethod(param: MethodHookParam) {
+                val id = (param.args.getOrNull(0) as? Number)?.toInt() ?: return
+                val origin = param.result as? android.graphics.drawable.Drawable ?: return
+                runCatching {
+                    if (hideSet.contains(id)) {
+                        val d = origin.constantState?.newDrawable()?.mutate() ?: origin.mutate()
+                        d.alpha = 0
+                        param.result = d
+                    } else {
+                        val color = tintMap[id] ?: return
+                        param.result = tinted(origin, color)
+                    }
+                }.onFailure { XposedBridge.log("$TAG: drawable swap fail $id -> ${it.message}") }
+            }
+        }
+
+        // Resources 的三个取 drawable 入口都要拦，不同 SDK 版本走不同重载
         runCatching {
             XposedHelpers.findAndHookMethod(
-                android.graphics.drawable.GradientDrawable::class.java,
-                "setColor", java.lang.Integer.TYPE,
+                android.content.res.Resources::class.java,
+                "getDrawable", java.lang.Integer.TYPE, android.content.res.Resources.Theme::class.java,
+                hook,
+            )
+        }.onFailure { XposedBridge.log("$TAG: getDrawable(id,theme) skipped -> ${it.message}") }
+
+        runCatching {
+            XposedHelpers.findAndHookMethod(
+                android.content.res.Resources::class.java,
+                "getDrawable", java.lang.Integer.TYPE, hook,
+            )
+        }.onFailure { XposedBridge.log("$TAG: getDrawable(id) skipped -> ${it.message}") }
+
+        runCatching {
+            XposedHelpers.findAndHookMethod(
+                android.content.res.Resources::class.java,
+                "getDrawableForDensity",
+                java.lang.Integer.TYPE, java.lang.Integer.TYPE,
+                android.content.res.Resources.Theme::class.java, hook,
+            )
+        }.onFailure { XposedBridge.log("$TAG: getDrawableForDensity skipped -> ${it.message}") }
+
+        // 用户气泡里的硬编码黑字 -> 深色下改浅色
+        hookUserBubbleText()
+
+        XposedBridge.log("$TAG: night drawable + bubble text patch installed")
+    }
+
+    /** 用 ColorFilter 把 shape drawable 染成目标色，保留 corners / stroke 形状 */
+    private fun tinted(src: android.graphics.drawable.Drawable, color: Int): android.graphics.drawable.Drawable {
+        val d = src.constantState?.newDrawable()?.mutate() ?: src.mutate()
+        d.setColorFilter(color, android.graphics.PorterDuff.Mode.SRC_IN)
+        return d
+    }
+
+    /**
+     * 用户气泡文字色修复。
+     *
+     * res/layout/trae_item_user_message.xml 里：
+     *   <TextView android:id="@+id/tv_message" android:textColor="#FF1A1A1A" .../>
+     * 硬编码黑字，没有 night 变体。气泡背景 trae_bg_chat_bubble_sent 的颜色走
+     * trae_bg_bg_overlay_l1，是有 night 变体的，深色下会变成深灰，
+     * 于是用户自己发的消息就成了黑底黑字。
+     *
+     * TextView.setTextColor(int) 在 setText 前会被调用，hook 它按 id 判断最稳。
+     */
+    private fun hookUserBubbleText() {
+        runCatching {
+            XposedHelpers.findAndHookMethod(
+                android.widget.TextView::class.java,
+                "setTextColor", java.lang.Integer.TYPE,
                 object : XC_MethodHook() {
                     override fun beforeHookedMethod(param: MethodHookParam) {
+                        val tv = param.thisObject as? android.widget.TextView ?: return
+                        // 只处理用户气泡正文：id 名必须是 tv_message 且当前色是硬编码黑
+                        val name = try {
+                            tv.resources.getResourceEntryName(tv.id)
+                        } catch (t: Throwable) {
+                            null
+                        }
+                        if (name != "tv_message") return
                         val c = (param.args[0] as? Number)?.toInt() ?: return
-                        if (c == 0xB3FFFFFF.toInt()) {
-                            param.args[0] = 0xB32A2A2A.toInt()
+                        if (c == 0xFF1A1A1A.toInt()) {
+                            param.args[0] = 0xFFE5E5E5.toInt()
                         }
                     }
                 },
             )
-        }.onFailure { XposedBridge.log("$TAG: gradient setColor(int) skipped -> ${it.message}") }
-
-        runCatching {
-            XposedHelpers.findAndHookMethod(
-                android.graphics.drawable.GradientDrawable::class.java,
-                "setColor", android.content.res.ColorStateList::class.java,
-                object : XC_MethodHook() {
-                    override fun beforeHookedMethod(param: MethodHookParam) {
-                        val cs = param.args[0] as? android.content.res.ColorStateList ?: return
-                        if (cs.isStateful) return
-                        if (cs.defaultColor == 0xB3FFFFFF.toInt()) {
-                            param.args[0] = android.content.res.ColorStateList.valueOf(0xB32A2A2A.toInt())
-                        }
-                    }
-                },
-            )
-        }.onFailure { XposedBridge.log("$TAG: gradient setColor(csl) skipped -> ${it.message}") }
-
-        XposedBridge.log("$TAG: input overlay patch installed")
+        }.onFailure { XposedBridge.log("$TAG: bubble textColor hook skipped -> ${it.message}") }
     }
 
     /** 同步静态字段，避免别处直接读字段时拿到旧值 */
