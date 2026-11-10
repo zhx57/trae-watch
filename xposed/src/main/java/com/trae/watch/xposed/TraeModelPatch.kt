@@ -617,8 +617,10 @@ class TraeModelPatch : IXposedHookLoadPackage {
             override fun beforeHookedMethod(param: MethodHookParam) {
                 val v = param.thisObject as? android.view.View ?: return
                 val bg = param.args[0] as? android.graphics.drawable.GradientDrawable ?: return
-                val color = runCatching { bg.color }.getOrNull() ?: return
-                if (!isNearOpaqueWhite(color)) return
+                // GradientDrawable.getColor() 在 API 24+ 返回 ColorStateList
+                val csl = runCatching { bg.color }.getOrNull() ?: return
+                if (csl.isStateful) return
+                if (!isNearOpaqueWhite(csl.defaultColor)) return
                 // 只处理横向铺满的容器，避免把白色小圆点/图标底也刷掉
                 val lp = v.layoutParams
                 val wide = lp != null &&
