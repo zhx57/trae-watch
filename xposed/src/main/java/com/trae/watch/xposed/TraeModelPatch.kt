@@ -65,6 +65,18 @@ class TraeModelPatch : IXposedHookLoadPackage {
         private const val CLS_CHAT_MODE =
             "com.bytedance.trae.conversation.widget.ChatMode"
 
+        private const val CLS_ROOT_POLICY =
+            "com.bytedance.trae.conversation.inputcontext.InputContextRootPolicy"
+        private const val CLS_ROOT_ROW =
+            "com.bytedance.trae.conversation.inputcontext.InputContextRootRow"
+        private const val CLS_CONTEXT_RUNTIME =
+            "com.bytedance.trae.conversation.inputcontext.ContextRuntime"
+        private const val CLS_DIRECT_ACTION =
+            "com.bytedance.trae.conversation.inputcontext.InputContextDirectAction"
+
+        private const val CLS_THEME_MANAGER =
+            "com.bytedance.trae.common.theme.ThemeManager"
+
         /**
          * 档位取值。
          *
@@ -93,9 +105,177 @@ class TraeModelPatch : IXposedHookLoadPackage {
             hookEffortConfig(lpparam.classLoader)
             hookMaxCapability(lpparam.classLoader)
             hookRemoteInputCapabilities(lpparam.classLoader)
+            hookInputRows(lpparam.classLoader)
+            hookDarkMode(lpparam.classLoader)
             XposedBridge.log("$TAG: hooks installed on ${lpparam.processName}")
         } catch (t: Throwable) {
             XposedBridge.log("$TAG: hook failed -> ${t.message}")
+        }
+    }
+
+    /**
+     * E. 直接改「加号面板」最终渲染的行列表。
+     *
+     * 上一版 hook 的是各种配置闸门（Feature 开关、enabledSources、isPluginVisible），
+     * 实测没有效果，说明真正把 LOCAL_FILE / PLUGINS / SKILLS 过滤掉的不是这几处。
+     *
+     * 这里换成最直接的手段：不关心上游怎么算，直接对 rows() 的返回值补行。
+     * 无论前面多少层判断，最终 UI 渲染的就是这个 List，补进去就一定会显示。
+     *
+     * 两个重载都要 hook：
+     *   rows(runtime, availableSources, enabledSources)
+     *   rows(runtime, availableSources, enabledSources, allowLocalFile,
+     *        allowProjectFiles, allowArtifacts, allowLarkContacts)
+     */
+    private fun hookInputRows(cl: ClassLoader) {
+        val policyCls = XposedHelpers.findClass(CLS_ROOT_POLICY, cl)
+        val runtimeCls = XposedHelpers.findClass(CLS_CONTEXT_RUNTIME, cl)
+        val sourcesCls = XposedHelpers.findClass(CLS_CONTEXT_SOURCE, cl)
+        val actionsCls = XposedHelpers.findClass(CLS_DIRECT_ACTION, cl)
+
+        val rowDirectCls = XposedHelpers.findClass("$CLS_ROOT_ROW\$Direct", cl)
+        val rowSourceCls = XposedHelpers.findClass("$CLS_ROOT_ROW\$Source", cl)
+
+        val hook = object : XC_MethodHook() {
+            override fun afterHookedMethod(param: MethodHookParam) {
+                val origin = param.result as? List<*> ?: return
+                param.result = enrichRows(origin, rowDirectCls, rowSourceCls, actionsCls, sourcesCls)
+            }
+        }
+
+        runCatching {
+            XposedHelpers.findAndHookMethod(
+                policyCls, "rows", runtimeCls, Set::class.java, Set::class.java, hook,
+            )
+        }.onFailure { XposedBridge.log("$TAG: rows(3) hook skipped -> ${it.message}") }
+
+        runCatching {
+            XposedHelpers.findAndHookMethod(
+                policyCls, "rows",
+                runtimeCls, Set::class.java, Set::class.java,
+                java.lang.Boolean.TYPE, java.lang.Boolean.TYPE,
+                java.lang.Boolean.TYPE, java.lang.Boolean.TYPE,
+                hook,
+            )
+        }.onFailure { XposedBridge.log("$TAG: rows(7) hook skipped -> ${it.message}") }
+    }
+
+    /**
+     * 在已有行基础上补齐：本地文件、项目文件、插件、技能。
+     * 用 equals 去重，避免与上游已存在的行重复。
+     */
+    private fun enrichRows(
+        origin: List<*>,
+        rowDirectCls: Class<*>,
+        rowSourceCls: Class<*>,
+        actionsCls: Class<*>,
+        sourcesCls: Class<*>,
+    ): List<Any?> {
+        val out = ArrayList<Any?>(origin)
+
+        // 需要的 Direct 行（目前只有本地文件会被 allowLocalFile 过滤掉）
+        for (action in listOf("LOCAL_FILE")) {
+            runCatching {
+                val enumVal = XposedHelpers.callStaticMethod(actionsCls, "valueOf", action)
+                val row = rowDirectCls.getDeclaredConstructor(actionsCls).newInstance(enumVal)
+                if (out.none { it == row }) out.add(row)
+            }
+        }
+
+        // 需要的 Source 行
+        for (source in listOf("PROJECT_FILES", "PLUGINS", "SKILLS")) {
+            runCatching {
+                val enumVal = XposedHelpers.callStaticMethod(sourcesCls, "valueOf", source)
+                val row = rowSourceCls.getDeclaredConstructor(sourcesCls).newInstance(enumVal)
+                if (out.none { it == row }) out.add(row)
+            }
+        }
+        return out
+    }
+
+    /**
+     * F. 全局深色模式。
+     *
+     * 逆向确认 TRAE 的主题完全由 ThemeManager 控制，不看资源目录：
+     *   - static volatile boolean isDarkMode  ← 实际被读的开关
+     *   - static volatile int darkMode        ← -1=跟随系统 / 1=深色 / 2=浅色
+     *
+     *   updateDarkModeFlag(cfg) { isDarkMode = (cfg.uiMode & 48) == 32 }
+     *   init()                  { darkMode = 1; AppCompatDelegate.setDefaultNightMode(1) }
+     *
+     * 所以正确的做法不是改 Configuration，而是：
+     *   1. hook updateDarkModeFlag，让 isDarkMode 恒为 true（Compose/UI 读这个）
+     *   2. hook init，把 darkMode 强制为 1（MODE_NIGHT_YES）
+     *   3. hook applyDarkMode，用户/系统改主题时也强制 1
+     *
+     * 保留 attachBaseContext 的 Configuration 改写作为兜底，
+     * 因为部分第三方组件（WebView、Lynx）仍可能读 uiMode。
+     */
+    private fun hookDarkMode(cl: ClassLoader) {
+        // 1) isDarkMode 恒 true
+        runCatching {
+            XposedHelpers.findAndHookMethod(
+                CLS_THEME_MANAGER, cl,
+                "updateDarkModeFlag",
+                android.content.res.Configuration::class.java,
+                object : XC_MethodHook() {
+                    override fun afterHookedMethod(param: MethodHookParam) {
+                        XposedHelpers.setStaticBooleanField(
+                            param.method.declaringClass, "isDarkMode", true,
+                        )
+                    }
+                },
+            )
+        }.onFailure { XposedBridge.log("$TAG: dark flag hook skipped -> ${it.message}") }
+
+        // 2) init / applyDarkMode 强制 MODE_NIGHT_YES
+        runCatching {
+            XposedHelpers.findAndHookMethod(
+                CLS_THEME_MANAGER, cl, "init",
+                object : XC_MethodHook() {
+                    override fun beforeHookedMethod(param: MethodHookParam) {
+                        forceNight(param.method.declaringClass)
+                    }
+                },
+            )
+        }.onFailure { XposedBridge.log("$TAG: dark init hook skipped -> ${it.message}") }
+
+        runCatching {
+            XposedHelpers.findAndHookMethod(
+                CLS_THEME_MANAGER, cl, "applyDarkMode",
+                java.lang.Integer.TYPE,
+                object : XC_MethodHook() {
+                    override fun beforeHookedMethod(param: MethodHookParam) {
+                        param.args[0] = 1
+                        forceNight(param.method.declaringClass)
+                    }
+                },
+            )
+        }.onFailure { XposedBridge.log("$TAG: dark apply hook skipped -> ${it.message}") }
+
+        // 3) 兜底：Configuration 也置为夜间（WebView / Lynx 等）
+        val cfgHook = object : XC_MethodHook() {
+            override fun afterHookedMethod(param: MethodHookParam) {
+                val ctx = param.result as? android.content.Context ?: return
+                val cfg = android.content.res.Configuration(ctx.resources.configuration)
+                cfg.uiMode = (cfg.uiMode and
+                    android.content.res.Configuration.UI_MODE_NIGHT_MASK.inv()) or
+                    android.content.res.Configuration.UI_MODE_NIGHT_YES
+                param.result = ctx.createConfigurationContext(cfg)
+            }
+        }
+        runCatching {
+            XposedHelpers.findAndHookMethod(
+                android.app.Activity::class.java, "attachBaseContext",
+                android.content.Context::class.java, cfgHook,
+            )
+        }.onFailure { XposedBridge.log("$TAG: cfg dark hook skipped -> ${it.message}") }
+    }
+
+    private fun forceNight(themeCls: Class<*>) {
+        runCatching {
+            XposedHelpers.setStaticIntField(themeCls, "darkMode", 1)
+            XposedHelpers.setStaticBooleanField(themeCls, "isDarkMode", true)
         }
     }
 
