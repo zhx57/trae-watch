@@ -52,6 +52,19 @@ class TraeModelPatch : IXposedHookLoadPackage {
         private const val CLS_CONTEXT_TOKENS =
             "com.bytedance.trae.conversation.network.ContextWindowTokens"
 
+        private const val CLS_FEATURE_CAPABILITY =
+            "com.bytedance.trae.settings.api.feature.FeatureCapability"
+        private const val CLS_FEATURE =
+            "com.bytedance.trae.settings.api.feature.Feature"
+        private const val CLS_ROLLOUT_POLICY =
+            "com.bytedance.trae.conversation.inputcontext.InputContextSourceRolloutPolicy"
+        private const val CLS_CONTEXT_SOURCE =
+            "com.bytedance.trae.conversation.inputcontext.ContextSource"
+        private const val CLS_ATTACHMENT_CONFIG =
+            "com.bytedance.trae.conversation.widget.ChatAttachmentConfig"
+        private const val CLS_CHAT_MODE =
+            "com.bytedance.trae.conversation.widget.ChatMode"
+
         /**
          * 档位取值。
          *
@@ -79,9 +92,93 @@ class TraeModelPatch : IXposedHookLoadPackage {
             hookHasThinking(lpparam.classLoader)
             hookEffortConfig(lpparam.classLoader)
             hookMaxCapability(lpparam.classLoader)
+            hookRemoteInputCapabilities(lpparam.classLoader)
             XposedBridge.log("$TAG: hooks installed on ${lpparam.processName}")
         } catch (t: Throwable) {
             XposedBridge.log("$TAG: hook failed -> ${t.message}")
+        }
+    }
+
+    /**
+     * D. 放开远程（REMOTE）会话的输入区能力。
+     *
+     * 目标：远程 PC 会话里也要能「上传文件」和「看到插件/技能入口」。
+     *
+     * 逆向发现这几处判定全部对 REMOTE 放行：
+     *   - InputFragment.isCodeRemoteFileAttachmentSupported() → REMOTE 直接 true
+     *   - ProjectFilesCapability.isSupported() → REMOTE 直接 true
+     *   - PluginCapability.isSupported() → 非 local 直接 true
+     *   - ChatAttachmentConfig 的 FILES/PLUGINS/SKILLS isVisible → 不看 cliType
+     *
+     * 也就是说代码逻辑本身是允许的，实际不显示只可能来自两个动态配置：
+     *   1. Feature.PLUGIN 开关（FeatureCapability.isEnabled）未对当前账号开启
+     *   2. InputContextSourceRolloutPolicy.getEnabledSources() 没下发 PLUGINS/SKILLS
+     *
+     * 所以这里不猜测具体哪层，直接把这三个「闸门」都改成放行，
+     * 并且对已有值的场景不覆盖，避免影响本来正常的本地会话。
+     */
+    private fun hookRemoteInputCapabilities(cl: ClassLoader) {
+        // 1) Feature 能力开关：PLUGIN 恒为开启
+        runCatching {
+            val featureCls = XposedHelpers.findClass(CLS_FEATURE_CAPABILITY, cl)
+            XposedHelpers.findAndHookMethod(
+                featureCls,
+                "isEnabled",
+                XposedHelpers.findClass(CLS_FEATURE, cl),
+                object : XC_MethodHook() {
+                    override fun afterHookedMethod(param: MethodHookParam) {
+                        val feature = param.args.getOrNull(0)?.toString() ?: return
+                        if (feature.contains("PLUGIN")) param.result = true
+                    }
+                },
+            )
+        }.onFailure { XposedBridge.log("$TAG: feature hook skipped -> ${it.message}") }
+
+        // 2) 可用输入源：确保包含 PLUGINS / SKILLS
+        runCatching {
+            val policyCls = XposedHelpers.findClass(CLS_ROLLOUT_POLICY, cl)
+            XposedHelpers.findAndHookMethod(
+                policyCls,
+                "getEnabledSources",
+                object : XC_MethodHook() {
+                    override fun afterHookedMethod(param: MethodHookParam) {
+                        // 返回值可能是不可变集合，不能原地 add，必须另建一个
+                        val origin = param.result as? Set<*> ?: return
+                        val merged = LinkedHashSet<Any?>(origin)
+                        for (name in listOf("PLUGINS", "SKILLS")) {
+                            addSourceByName(cl, merged, name)
+                        }
+                        param.result = merged
+                    }
+                },
+            )
+        }.onFailure { XposedBridge.log("$TAG: rollout hook skipped -> ${it.message}") }
+
+        // 3) 兜底：技能入口恒可见
+        runCatching {
+            val cfgCls = XposedHelpers.findClass(CLS_ATTACHMENT_CONFIG, cl)
+            XposedHelpers.findAndHookMethod(
+                cfgCls,
+                "isPluginVisible",
+                XposedHelpers.findClass(CLS_CHAT_MODE, cl),
+                java.lang.Boolean.TYPE,
+                java.lang.Boolean.TYPE,
+                String::class.java,
+                object : XC_MethodHook() {
+                    override fun afterHookedMethod(param: MethodHookParam) {
+                        param.result = true
+                    }
+                },
+            )
+        }.onFailure { XposedBridge.log("$TAG: plugin visible hook skipped -> ${it.message}") }
+    }
+
+    /** 按枚举名往 set 里补一个 ContextSource 元素 */
+    private fun addSourceByName(cl: ClassLoader, set: MutableSet<Any?>, name: String) {
+        runCatching {
+            val sourceCls = XposedHelpers.findClass(CLS_CONTEXT_SOURCE, cl)
+            val entry = XposedHelpers.callStaticMethod(sourceCls, "valueOf", name)
+            if (entry != null) set.add(entry)
         }
     }
 
