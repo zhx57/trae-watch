@@ -647,9 +647,11 @@ class TraeModelPatch : IXposedHookLoadPackage {
             "normal_content" -> {
                 v.background = rounded(0xFF1E1E1E.toInt(), 24f * density)
             }
-            // 卡片外层 CardView：边框和阴影本体，也得压深
-            "card_container" -> (v as? androidx.cardview.widget.CardView)
-                ?.setCardBackgroundColor(0xFF1E1E1E.toInt())
+            // 卡片外层 CardView：边框和阴影本体，也得压深。
+            // 模块没有 cardview 依赖，用反射调 setCardBackgroundColor。
+            "card_container" -> runCatching {
+                XposedHelpers.callMethod(v, "setCardBackgroundColor", 0xFF1E1E1E.toInt())
+            }
             // 问题标题滚动区：去掉浅色渐隐边
             "title_scroll_view" -> {
                 runCatching {
