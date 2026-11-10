@@ -152,11 +152,15 @@ fun ChatScreen(
                 contentPadding = PaddingValues(8.dp),
                 verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
-                items(messages, key = { it.id }) { m -> Bubble(m) }
+                items(
+                    items = messages,
+                    key = { it.id },
+                    contentType = { it.type },
+                ) { m -> Bubble(m) }
             }
-            // 新消息吸底，与主流对话客户端一致
+            // 新消息吸底。低端机上动画滚长列表会明显掉帧，用瞬时滚动
             LaunchedEffect(messages.size) {
-                if (messages.isNotEmpty()) listState.animateScrollToItem(messages.lastIndex)
+                if (messages.isNotEmpty()) listState.scrollToItem(messages.lastIndex)
             }
         }
     }
@@ -209,7 +213,8 @@ private fun Bubble(m: Message) {
                     text = m.text,
                     style = MaterialTheme.typography.bodySmall,
                     color = content,
-                    maxLines = if (m.type == "tool") 3 else 40,
+                    // 手表屏幕小：工具只显示 2 行，正文最多 12 行，避免单个气泡占满整屏
+                    maxLines = if (m.type == "tool") 2 else 12,
                     overflow = TextOverflow.Ellipsis,
                 )
                 if (m.status == "sending" || m.status == "failed") {

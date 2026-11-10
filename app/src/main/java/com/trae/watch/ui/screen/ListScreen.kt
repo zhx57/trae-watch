@@ -204,7 +204,8 @@ private fun ConvRow(
             },
             headlineContent = {
                 Text(
-                    text = conv.title,
+                    // 标题可能很长，硬截断避免超长文本参与测量拖慢滚动
+                    text = if (conv.title.length > 60) conv.title.take(60) + "…" else conv.title,
                     style = MaterialTheme.typography.bodyMedium,
                     color = cs.onSurface,
                     maxLines = 1,

@@ -20,7 +20,8 @@ class Db(private val ctx: Context) : SQLiteOpenHelper(ctx, NAME, null, VERSION) 
     companion object {
         private const val TAG = "TraeDb"
         private const val NAME = "trae_watch.db"
-        private const val VERSION = 1
+        /** v2：修复助手消息解析（旧版把 task 原始 JSON 当正文写库，必须清掉） */
+        private const val VERSION = 2
 
         const val T_CONV = "conversation"
         const val T_MSG = "message"
