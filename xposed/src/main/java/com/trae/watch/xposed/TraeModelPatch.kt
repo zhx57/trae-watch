@@ -49,10 +49,24 @@ class TraeModelPatch : IXposedHookLoadPackage {
             "com.bytedance.trae.conversation.network.RemoteModelItem"
         private const val CLS_EFFORT_CONFIG =
             "com.bytedance.trae.conversation.network.ReasoningEffortConfig"
+        private const val CLS_CONTEXT_TOKENS =
+            "com.bytedance.trae.conversation.network.ContextWindowTokens"
 
-        /** 固定两个档位，与官方 UI 的文案映射一致 */
-        private val OPTIONS = listOf("high", "light")
-        private const val DEFAULT_LEVEL = "high"
+        /**
+         * 档位取值。
+         *
+         * 注意：这个字段最终透传给上游 OpenAI 兼容接口。
+         * 截图实测的报错（workbuddy/deepseek-v4.1-flash）：
+         *   invalid_reasoning_control: reasoning_effort must be one of
+         *   none, minimal, low, medium, high, xhigh, max, ultra
+         * 所以必须用这套枚举，不能用 TRAE UI 里的 light。
+         */
+        private val OPTIONS = listOf("low", "medium", "high", "xhigh", "max")
+        private const val DEFAULT_LEVEL = "medium"
+
+        /** max 模式开启后使用的更大上下文窗口 */
+        private const val MAX_CONTEXT_TOKENS = 1_000_000L
+        private const val BASE_CONTEXT_TOKENS = 200_000L
     }
 
     override fun handleLoadPackage(lpparam: XC_LoadPackage.LoadPackageParam) {
@@ -64,6 +78,7 @@ class TraeModelPatch : IXposedHookLoadPackage {
         try {
             hookHasThinking(lpparam.classLoader)
             hookEffortConfig(lpparam.classLoader)
+            hookMaxCapability(lpparam.classLoader)
             XposedBridge.log("$TAG: hooks installed on ${lpparam.processName}")
         } catch (t: Throwable) {
             XposedBridge.log("$TAG: hook failed -> ${t.message}")
@@ -122,5 +137,54 @@ class TraeModelPatch : IXposedHookLoadPackage {
         }
         ctor.isAccessible = true
         return ctor.newInstance(true, ArrayList(OPTIONS), DEFAULT_LEVEL)
+    }
+
+    /**
+     * C. max 模式。
+     *
+     * 判定条件（RemoteModelItem.getHasMaxCapability）：
+     *   maxMode == true && contextWindowTokens?.max != null && max != 0
+     *
+     * 自定义模型这两个字段都是 null / false，所以开关不显示。
+     * 这里伪造：
+     *   - getHasMaxCapability() 恒 true，让 UI 显示 max 开关
+     *   - getContextWindowTokens() 在为空时补一个 {dev=BASE, max=MAX}
+     *
+     * 注意：开关本身由 ModelCapabilityRepository.isMaxEnabled 存 Keva，
+     * 打开后 ConversationViewModel 会删掉请求体里的 context_window_tokens，
+     * 交给服务端用该模型的最大窗口，所以这里补的数字只影响 UI 展示，不影响实际行为。
+     */
+    private fun hookMaxCapability(cl: ClassLoader) {
+        val modelCls = XposedHelpers.findClass(CLS_MODEL_ITEM, cl)
+        val ctxCls = XposedHelpers.findClass(CLS_CONTEXT_TOKENS, cl)
+
+        XposedHelpers.findAndHookMethod(
+            modelCls,
+            "getHasMaxCapability",
+            object : XC_MethodHook() {
+                override fun afterHookedMethod(param: MethodHookParam) {
+                    param.result = true
+                }
+            },
+        )
+
+        XposedHelpers.findAndHookMethod(
+            modelCls,
+            "getContextWindowTokens",
+            object : XC_MethodHook() {
+                override fun afterHookedMethod(param: MethodHookParam) {
+                    if (param.result != null) return
+                    // ContextWindowTokens(Long dev, Long max)
+                    val ctor = ctxCls.declaredConstructors.first {
+                        val p = it.parameterTypes
+                        p.size == 2 &&
+                            p[0] == java.lang.Long::class.java &&
+                            p[1] == java.lang.Long::class.java
+                    }
+                    ctor.isAccessible = true
+                    param.result = ctor.newInstance(BASE_CONTEXT_TOKENS, MAX_CONTEXT_TOKENS)
+                }
+            },
+        )
     }
 }
