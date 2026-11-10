@@ -82,6 +82,11 @@ class TraeModelPatch : IXposedHookLoadPackage {
         /** Compose 色板数据源，getLight() 返回的就是界面实际使用的浅色板 */
         private const val CLS_COLOR_TOKENS =
             "com.bytedance.trae.kmp.ui.theme.TraeColorTokens"
+        private const val CLS_PALETTE_BASE =
+            "com.bytedance.trae.kmp.ui.theme.TraeColors"
+        /** 浅/深色板实现类的包前缀，拼接 LightColors / DarkColors */
+        private const val CLS_PALETTE_PREFIX =
+            "com.bytedance.trae.kmp.ui.theme.Trae"
 
         /**
          * AppCompatDelegate 的夜间模式常量。
@@ -380,6 +385,66 @@ class TraeModelPatch : IXposedHookLoadPackage {
             )
             XposedBridge.log("$TAG: getLight -> Dark hook installed")
         }.onFailure { XposedBridge.log("$TAG: palette getter hook skipped -> ${it.message}") }
+
+        // 方式三（最底层兜底）：把 TraeLightColors 的每个取色方法转发到 TraeDarkColors 同名方法。
+        // 这一步绕过所有中间层：即使字段替换失败、getter 被内联、
+        // 只要最终取到颜色，就一定经过某个 getXxx(long) 方法。
+        hookPaletteMethods(cl)
+
+        // 诊断：打印当前 Light 字段指向的实例类型，确认替换是否成功
+        runCatching {
+            XposedHelpers.getStaticObjectField(tokensCls, "Light")?.let {
+                XposedBridge.log("$TAG: Light now -> ${it.javaClass.name}")
+            }
+            XposedHelpers.getStaticObjectField(tokensCls, "Dark")?.let {
+                XposedBridge.log("$TAG: Dark -> ${it.javaClass.name}")
+            }
+        }.onFailure { XposedBridge.log("$TAG: diag failed -> ${it.message}") }
+    }
+
+    /**
+     * 遍历 TraeColors 抽象方法，在浅色实现上 hook，转发到深色实现的同名方法。
+     *
+     * TraeColors 的每个方法返回 long（Compose Color 是 @JvmInline value class，
+     * 编译后就是 long），签名形如 mo9297getAccentAccentAmber0d7_KjU()J。
+     * 两个实现类方法名完全一致，可以直接按名字对应。
+     */
+    private fun hookPaletteMethods(cl: ClassLoader) {
+        val lightCls = runCatching {
+            XposedHelpers.findClass("$CLS_PALETTE_PREFIX.LightColors", cl)
+        }.getOrNull()
+        val darkCls = runCatching {
+            XposedHelpers.findClass("$CLS_PALETTE_PREFIX.DarkColors", cl)
+        }.getOrNull()
+        val baseCls = runCatching {
+            XposedHelpers.findClass(CLS_PALETTE_BASE, cl)
+        }.getOrNull()
+
+        if (lightCls == null || darkCls == null || baseCls == null) {
+            XposedBridge.log("$TAG: palette classes missing light=$lightCls dark=$darkCls base=$baseCls")
+            return
+        }
+
+        var count = 0
+        for (m in baseCls.declaredMethods) {
+            if (m.returnType != java.lang.Long.TYPE) continue
+            if (m.parameterTypes.isNotEmpty()) continue
+            runCatching {
+                val darkMethod = darkCls.getDeclaredMethod(m.name)
+                darkMethod.isAccessible = true
+                val darkInstance = XposedHelpers.getStaticObjectField(darkCls, "INSTANCE")
+                XposedHelpers.findAndHookMethod(
+                    lightCls, m.name,
+                    object : XC_MethodHook() {
+                        override fun afterHookedMethod(param: MethodHookParam) {
+                            param.result = darkMethod.invoke(darkInstance)
+                        }
+                    },
+                )
+                count++
+            }
+        }
+        XposedBridge.log("$TAG: palette forwarded methods = $count")
     }
 
     /**
