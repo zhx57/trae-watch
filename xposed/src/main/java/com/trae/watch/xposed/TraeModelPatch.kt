@@ -276,18 +276,39 @@ class TraeModelPatch : IXposedHookLoadPackage {
             )
         }.onFailure { XposedBridge.log("$TAG: applyDarkMode hook skipped -> ${it.message}") }
 
-        // 4) init 执行完，主动把 AppCompat 切成夜间，让 XML 走 -night 资源
+        // 4) init 执行前就把静态字段改成夜间（因为 init 里写死 darkMode = 1）
         runCatching {
             XposedHelpers.findAndHookMethod(
                 CLS_THEME_MANAGER, cl, "init",
                 object : XC_MethodHook() {
-                    override fun afterHookedMethod(param: MethodHookParam) {
+                    override fun beforeHookedMethod(param: MethodHookParam) {
                         forceNight(param.method.declaringClass)
-                        applyAppCompatNight(cl)
+                    }
+
+                    override fun afterHookedMethod(param: MethodHookParam) {
+                        // init 内部会 setDefaultNightMode(1)，靠下面的入口拦截改成 2
+                        forceNight(param.method.declaringClass)
                     }
                 },
             )
         }.onFailure { XposedBridge.log("$TAG: dark init hook skipped -> ${it.message}") }
+
+        // 4.5) 关键：拦 AppCompatDelegate.setDefaultNightMode，把所有非夜间值改成夜间。
+        //      这是 XML 资源走 -night 目录的唯一入口，也是 init() 里那行硬编码的拦截点。
+        runCatching {
+            val delegateCls = XposedHelpers.findClass(CLS_APPCOMPAT_DELEGATE, cl)
+            XposedHelpers.findAndHookMethod(
+                delegateCls, "setDefaultNightMode", java.lang.Integer.TYPE,
+                object : XC_MethodHook() {
+                    override fun beforeHookedMethod(param: MethodHookParam) {
+                        if ((param.args[0] as Int) != MODE_NIGHT_YES) {
+                            param.args[0] = MODE_NIGHT_YES
+                        }
+                    }
+                },
+            )
+            XposedBridge.log("$TAG: setDefaultNightMode forced to NIGHT_YES")
+        }.onFailure { XposedBridge.log("$TAG: night mode entry hook skipped -> ${it.message}") }
 
         // 5) 兜底：Configuration 置为夜间（WebView / Lynx 等第三方组件）
         val cfgHook = object : XC_MethodHook() {
