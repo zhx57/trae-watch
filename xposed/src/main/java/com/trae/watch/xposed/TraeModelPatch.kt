@@ -123,6 +123,9 @@ class TraeModelPatch : IXposedHookLoadPackage {
             hookMaxCapability(lpparam.classLoader)
             hookRemoteInputCapabilities(lpparam.classLoader)
             hookInputRows(lpparam.classLoader)
+            // 远程 PC 会话点技能/插件时，TRAE 只对 LOCAL / IDE 传 cliId，
+            // REMOTE 落到 else 分支传 null，于是取到账号级技能而不是远程设备的。
+            hookRemoteSkills(lpparam.classLoader)
             hookDarkMode(lpparam.classLoader)
             // 最后一层兜底：Activity 内容就绪后直接遍历 View 树刷成深色。
             // 前面那些资源层 hook 依赖的东西太多（资源解析时机、night 变体是否
@@ -580,10 +583,41 @@ class TraeModelPatch : IXposedHookLoadPackage {
                     v.getChildAt(i)?.let { stack.add(it) }
                 }
             }
-            if (v.id == android.view.View.NO_ID) continue
-            val name = runCatching { v.resources.getResourceEntryName(v.id) }.getOrNull() ?: continue
-            if (!darkViewNames.contains(name)) continue
-            runCatching { paintDark(v, name) }
+            if (v.id == android.view.View.NO_ID) {
+                paintDialogSurface(v)
+                continue
+            }
+            val name = runCatching { v.resources.getResourceEntryName(v.id) }.getOrNull()
+            if (name != null && darkViewNames.contains(name)) {
+                runCatching { paintDark(v, name) }
+                continue
+            }
+            // 无 id 但带背景的容器：可能是 bottom_sheet 的白色底
+            paintDialogSurface(v)
+        }
+    }
+
+    /**
+     * 处理插件 / 技能等 bottom sheet 的白色底板。
+     *
+     * bg_bottom_sheet.xml 是 <solid #FFFFFFFF> + 顶部圆角，无 night 变体。
+     * 它被 inflate 成 GradientDrawable 后塞进 View.background，这里直接把
+     * 纯白 / 近白的纯色 GradientDrawable 换成深色，形状（圆角）整体保留不了，
+     * 所以只在宽度接近屏幕宽度时才替换，避免误伤小图标。
+     */
+    private fun paintDialogSurface(v: android.view.View) {
+        val bg = v.background as? android.graphics.drawable.GradientDrawable ?: return
+        // 只处理接近满宽的容器
+        val w = v.width
+        if (w <= 0 || w < v.resources.displayMetrics.widthPixels * 0.85f) return
+        val h = v.height
+        if (h <= 0) return
+        runCatching {
+            val d = bg.constantState?.newDrawable()?.mutate() ?: bg.mutate()
+            d.colorFilter = android.graphics.PorterDuffColorFilter(
+                0xFF1E1E1E.toInt(), android.graphics.PorterDuff.Mode.SRC_IN,
+            )
+            v.background = d
         }
     }
 
@@ -605,6 +639,16 @@ class TraeModelPatch : IXposedHookLoadPackage {
         "iv_source_icon",
         "tv_direct_title",
         "tv_source_title",
+        // 输入框底部操作按钮：ic_input_bar_add / _microphone / _voice_chat
+        // 都是 PNG 位图，实测像素均值 RGB(37,37,37)，深色底上完全看不见。
+        "btn_plus",
+        "btn_microphone",
+        "btn_chat_new",
+        "btn_hold_to_talk",
+        "btn_express_pass",
+        // 插件 / 技能选择面板的空态类容器。
+        // 注意：content_container / search_container 被 6 个布局共用，
+        // 按名字全局改会误伤消息气泡，改为在 View 上判断父链里的 title_bar 来决定。
     )
 
     /** 按控件名执行深色改写 */
@@ -673,6 +717,12 @@ class TraeModelPatch : IXposedHookLoadPackage {
             // 加号菜单标题文字
             "tv_direct_title", "tv_source_title" -> (v as? android.widget.TextView)
                 ?.setTextColor(0xFFE5E5E5.toInt())
+            // 输入框底部操作按钮。这些图标是 PNG 位图（drawable-xxhdpi-v4/
+            // ic_input_bar_add.png 等），像素均值 RGB(37,37,37)，在深色底上不可见。
+            // setColorFilter 对带 alpha 通道的位图整片染色，效果等同 tint。
+            "btn_plus", "btn_microphone", "btn_chat_new",
+            "btn_hold_to_talk", "btn_express_pass" -> (v as? android.widget.ImageView)
+                ?.setColorFilter(0xFFE5E5E5.toInt())
         }
     }
 
@@ -692,6 +742,90 @@ class TraeModelPatch : IXposedHookLoadPackage {
                 root.getChildAt(i)?.let { recolorTexts(it, color) }
             }
         }
+    }
+
+    /**
+     * I. 远程 PC 会话的技能 / 插件列表取错数据源。
+     *
+     * 逆向 InputFragment.showSkillsBottomSheetForDevice()：
+     *
+     *   CliType type = device.getType();
+     *   switch (type) {
+     *     case LOCAL: showSkillsBottomSheet(device.getId(), dir, null, false, ...);
+     *     case IDE:   showSkillsBottomSheet(device.getId(), dir, projectId, true, ...);
+     *     default:    showSkillsBottomSheet(null, null, null, false, ...);  // REMOTE 落这里
+     *   }
+     *
+     * 而 SkillsViewModel 里 SkillRequestPolicy.shouldUseHubApi() 的判定是
+     * cliId 非空才走 Hub（远程设备技能），cliId 为空就走账号级普通技能列表。
+     * 所以远程 PC 会话点技能看到的是账号技能，不是那台 PC 上的技能。
+     *
+     * 修法：在 showSkillsBottomSheetForDevice 入口把 REMOTE 设备的 id 记下来，
+     * 等到 newInstance 被调用时替换第一个参数 cliId。
+     */
+    private fun hookRemoteSkills(cl: ClassLoader) {
+        val pendingCliId = ThreadLocal<String?>()
+
+        // 1) 在分发入口截获 REMOTE 设备
+        runCatching {
+            val inputFragmentCls = XposedHelpers.findClass(
+                "com.bytedance.trae.conversation.widget.InputFragment", cl,
+            )
+            val deviceCls = XposedHelpers.findClass(
+                "com.bytedance.trae.conversation.devices.SelectedDeviceItem", cl,
+            )
+            XposedHelpers.findAndHookMethod(
+                inputFragmentCls,
+                "showSkillsBottomSheetForDevice",
+                deviceCls, java.lang.Boolean.TYPE,
+                object : XC_MethodHook() {
+                    override fun beforeHookedMethod(param: MethodHookParam) {
+                        pendingCliId.remove()
+                        val device = param.args[0] ?: return
+                        // CliType 枚举名含 REMOTE 才处理
+                        val type = runCatching {
+                            XposedHelpers.callMethod(device, "getType")
+                        }.getOrNull() ?: return
+                        if (type.toString() != "REMOTE") return
+                        val id = runCatching {
+                            XposedHelpers.callMethod(device, "getId") as? String
+                        }.getOrNull()
+                        val dir = runCatching {
+                            XposedHelpers.callMethod(device, "getSelectedDirectory") as? String
+                        }.getOrNull()
+                        if (!id.isNullOrBlank()) {
+                            pendingCliId.set(id)
+                            XposedBridge.log("$TAG: remote skill cliId=$id dir=$dir")
+                        }
+                    }
+                },
+            )
+        }.onFailure { XposedBridge.log("$TAG: remote skill entry hook skipped -> ${it.message}") }
+
+        // 2) 在 newInstance 里补 cliId / workspaceFolder / isIdeSkills
+        runCatching {
+            val companionCls = XposedHelpers.findClass(
+                "com.bytedance.trae.conversation.skill.SkillsBottomSheet\$Companion", cl,
+            )
+            XposedHelpers.findAndHookMethod(
+                companionCls, "newInstance",
+                String::class.java, String::class.java, String::class.java,
+                java.lang.Boolean.TYPE, String::class.java, String::class.java,
+                String::class.java, java.lang.Boolean.TYPE, Object::class.java,
+                object : XC_MethodHook() {
+                    override fun beforeHookedMethod(param: MethodHookParam) {
+                        val id = pendingCliId.get() ?: return
+                        if (param.args[0] == null) {
+                            param.args[0] = id
+                            // isIdeSkills=true 才会带上 projectId 走 IDE 那套分支
+                            param.args[3] = true
+                            XposedBridge.log("$TAG: injected remote cliId into SkillsBottomSheet")
+                        }
+                        pendingCliId.remove()
+                    }
+                },
+            )
+        }.onFailure { XposedBridge.log("$TAG: newInstance hook skipped -> ${it.message}") }
     }
 
     /** 反射调 AppCompatDelegate.setDefaultNightMode，让资源走 -night 目录 */
