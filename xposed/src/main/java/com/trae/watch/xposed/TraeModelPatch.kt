@@ -927,7 +927,10 @@ class TraeModelPatch : IXposedHookLoadPackage {
     private fun hookRemoteSkills(cl: ClassLoader) {
         // 用静态变量而不是 ThreadLocal：showSkillsBottomSheetForDevice 到
         // newInstance 之间可能跨协程线程，ThreadLocal 会丢值。
-        val pendingCliId = java.util.concurrent.atomic.AtomicReference<String?>(null)
+        // 记录三元组：设备 id / 该设备当前选中的工作目录 / 项目 id。
+        // 之前只补了 cliId，workspaceFolder 和 projectId 仍为 null，
+        // Hub API 少了这两个参数就查不到那台 PC 工作目录下的本地技能。
+        val pending = java.util.concurrent.atomic.AtomicReference<Triple<String, String?, String?>?>(null)
 
         // 1) 在分发入口截获 REMOTE 设备
         runCatching {
@@ -943,7 +946,7 @@ class TraeModelPatch : IXposedHookLoadPackage {
                 deviceCls, java.lang.Boolean.TYPE,
                 object : XC_MethodHook() {
                     override fun beforeHookedMethod(param: MethodHookParam) {
-                        pendingCliId.set(null)
+                        pending.set(null)
                         val device = param.args[0] ?: return
                         val type = runCatching {
                             XposedHelpers.callMethod(device, "getType")
@@ -954,9 +957,12 @@ class TraeModelPatch : IXposedHookLoadPackage {
                         val dir = runCatching {
                             XposedHelpers.callMethod(device, "getSelectedDirectory") as? String
                         }.getOrNull()
-                        XposedBridge.log("$TAG: skill entry type=$type id=$id dir=$dir")
+                        val pid = runCatching {
+                            XposedHelpers.callMethod(device, "getProjectId") as? String
+                        }.getOrNull()
+                        XposedBridge.log("$TAG: skill entry type=$type id=$id dir=$dir pid=$pid")
                         if (type.toString() == "REMOTE" && !id.isNullOrBlank()) {
-                            pendingCliId.set(id)
+                            pending.set(Triple(id, dir, pid))
                         }
                     }
                 },
@@ -980,10 +986,34 @@ class TraeModelPatch : IXposedHookLoadPackage {
                 String::class.java, java.lang.Boolean.TYPE, modeCls,
                 object : XC_MethodHook() {
                     override fun beforeHookedMethod(param: MethodHookParam) {
-                        val id = pendingCliId.getAndSet(null) ?: return
-                        XposedBridge.log("$TAG: injecting cliId=$id into skills sheet")
-                        param.args[0] = id
+                        val info = pending.get() ?: return
+                        XposedBridge.log(
+                            "$TAG: injecting cliId=${info.first} dir=${info.second} pid=${info.third}",
+                        )
+                        // cliId：让 SkillRequestPolicy.shouldUseHubApi() 返回 true
+                        param.args[0] = info.first
+                        // workspaceFolder / projectId：Hub API 靠这两个参数定位
+                        // 那台 PC 上具体工作目录的技能，留空就只能拿到设备级列表。
+                        if (param.args[1] == null && !info.second.isNullOrBlank()) {
+                            param.args[1] = info.second
+                        }
+                        if (param.args[2] == null && !info.third.isNullOrBlank()) {
+                            param.args[2] = info.third
+                        }
                         param.args[3] = true
+                        // 第 8 个参数 includePluginSkills。
+                        //
+                        // SkillsViewModel.loadSkills() 里：
+                        //   pluginSkillsResolved = !includePluginSkills;
+                        //   if (includePluginSkills) launch { pluginSkills = ... };
+                        //   fetchSkills(false);
+                        // publishSkills() 最终发布的是 ordinarySkills + pluginSkills。
+                        //
+                        // 所以这个开关决定「本地/插件技能」那一组要不要一起拉。
+                        // 远程会话下它由 isPluginVisible 策略算出来，常常是 false，
+                        // 于是只有 Hub 那一批远程技能，本地技能全没了。
+                        // 置 true 后两组会合并显示。
+                        param.args[7] = true
                     }
                 },
             )
@@ -1002,12 +1032,31 @@ class TraeModelPatch : IXposedHookLoadPackage {
                 object : XC_MethodHook() {
                     override fun beforeHookedMethod(param: MethodHookParam) {
                         val vm = param.thisObject ?: return
-                        val id = pendingCliId.get() ?: return
+                        // 无条件打开插件/本地技能那一组的拉取，保证列表是
+                        // ordinarySkills + pluginSkills 合并后的完整结果。
+                        runCatching {
+                            XposedHelpers.setBooleanField(vm, "includePluginSkills", true)
+                        }
+                        // cliId 只在远程会话时补，非远程保持原样。
+                        val info = pending.getAndSet(null) ?: return
+                        val id = info.first
                         val cur = runCatching {
                             XposedHelpers.getObjectField(vm, "cliId") as? String
                         }.getOrNull()
                         if (cur.isNullOrBlank()) {
                             XposedHelpers.setObjectField(vm, "cliId", id)
+                            // 同理补上工作目录和项目 id，Hub 查询才会覆盖
+                            // 那台 PC 当前目录下的本地技能。
+                            if (!info.second.isNullOrBlank()) {
+                                runCatching {
+                                    XposedHelpers.setObjectField(vm, "workspaceFolder", info.second)
+                                }
+                            }
+                            if (!info.third.isNullOrBlank()) {
+                                runCatching {
+                                    XposedHelpers.setObjectField(vm, "projectId", info.third)
+                                }
+                            }
                             XposedBridge.log("$TAG: loadSkills cliId patched to $id")
                         }
                     }
