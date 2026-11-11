@@ -126,6 +126,9 @@ class TraeModelPatch : IXposedHookLoadPackage {
             // 思考内容：ThoughtRenderer 里动态 new 的 SimpleMarkdownTextView，
             // 颜色取自 common_ui 的 trae_text_text_default，深色下偏灰。
             hookThoughtText(lpparam.classLoader)
+            // 技能数据：恢复注入。实测删掉之后列表直接空了 —— 说明普通/账号级
+            // 接口在当前场景返回空，插件技能组是唯一有内容的来源。
+            hookRemoteSkills(lpparam.classLoader)
             installSkillDiagnostics(lpparam.classLoader)
             hookDarkMode(lpparam.classLoader)
             // 最后一层兜底：Activity 内容就绪后直接遍历 View 树刷成深色。
