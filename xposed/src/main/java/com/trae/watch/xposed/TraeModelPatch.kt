@@ -123,9 +123,9 @@ class TraeModelPatch : IXposedHookLoadPackage {
             hookMaxCapability(lpparam.classLoader)
             hookRemoteInputCapabilities(lpparam.classLoader)
             hookInputRows(lpparam.classLoader)
-            // 远程 PC 会话点技能/插件时，TRAE 只对 LOCAL / IDE 传 cliId，
-            // REMOTE 落到 else 分支传 null，于是取到账号级技能而不是远程设备的。
-            hookRemoteSkills(lpparam.classLoader)
+            // 思考内容：ThoughtRenderer 里动态 new 的 SimpleMarkdownTextView，
+            // 颜色取自 common_ui 的 trae_text_text_default，深色下偏灰。
+            hookThoughtText(lpparam.classLoader)
             hookDarkMode(lpparam.classLoader)
             // 最后一层兜底：Activity 内容就绪后直接遍历 View 树刷成深色。
             // 前面那些资源层 hook 依赖的东西太多（资源解析时机、night 变体是否
@@ -1095,7 +1095,46 @@ class TraeModelPatch : IXposedHookLoadPackage {
     }
 
     /**
-     * I. 远程 PC 会话的技能 / 插件列表取错数据源。
+     * L. 思考内容文字提亮。
+     *
+     * 思考不是 XML，而是 ThoughtRenderer.render() 里动态创建的：
+     *   SimpleMarkdownTextView tv = new SimpleMarkdownTextView(context, ...);
+     *   tv.setTextColor(ContextCompat.getColor(context,
+     *       com.bytedance.trae.common_ui.R.color.trae_text_text_default));
+     *
+     * 注意颜色取的是 common_ui 包里的 trae_text_text_default，和主包同名但不同资源，
+     * 在深色下取到的值偏灰，所以正文看起来灰蒙蒙的。
+     * 直接在 render 返回后覆盖成亮色最直接，也不会影响普通消息。
+     */
+    private fun hookThoughtText(cl: ClassLoader) {
+        runCatching {
+            val rendererCls = XposedHelpers.findClass(
+                "com.bytedance.trae.conversation.chat.block.renderer.ThoughtRenderer", cl,
+            )
+            val thoughtCls = XposedHelpers.findClass(
+                "com.bytedance.trae.conversation.chat.block.AgentContentBlock\$Thought", cl,
+            )
+            XposedHelpers.findAndHookMethod(
+                rendererCls, "render",
+                android.content.Context::class.java, thoughtCls,
+                object : XC_MethodHook() {
+                    override fun afterHookedMethod(param: MethodHookParam) {
+                        val tv = param.result as? android.widget.TextView ?: return
+                        runCatching { tv.setTextColor(0xFFDCDCDC.toInt()) }
+                    }
+                },
+            )
+            XposedBridge.log("$TAG: thought text hook installed")
+        }.onFailure { XposedBridge.log("$TAG: thought text hook skipped -> ${it.message}") }
+    }
+
+    /**
+     * I. 【已停用，未在 handleLoadPackage 中调用】
+     *
+     * 之前为了修「远程会话技能少」注入了 cliId / workspaceFolder / projectId
+     * 并强制 includePluginSkills=true。实际证明 TRAE 原生就能正确加载那台电脑的
+     * 技能，这套注入反而把数据源改坏了，所以整段停用，恢复原生行为。
+     * 保留代码仅作记录。
      *
      * 逆向 InputFragment.showSkillsBottomSheetForDevice()：
      *
