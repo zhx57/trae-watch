@@ -214,8 +214,14 @@ class TraeModelPatch : IXposedHookLoadPackage {
             }
         }
 
-        // 需要的 Source 行
-        for (source in listOf("PROJECT_FILES", "PLUGINS", "SKILLS")) {
+        // 需要的 Source 行。
+        // ContextSource 枚举全集是：
+        //   PROJECT_FILES, SKILLS, PLUGINS, LIBRARY, LARK_DOCS, LARK_CONTACTS
+        // 用户在远程 PC 会话里要的是「插件」和「飞书文档」，
+        // 所以这里必须包含 PLUGINS 和 LARK_DOCS。
+        // 原来只补了 PROJECT_FILES / PLUGINS / SKILLS，缺 LARK_DOCS，
+        // 导致飞书文档入口根本不出现。
+        for (source in listOf("PROJECT_FILES", "PLUGINS", "SKILLS", "LARK_DOCS")) {
             runCatching {
                 val enumVal = XposedHelpers.callStaticMethod(sourcesCls, "valueOf", source)
                 val row = rowSourceCls.getDeclaredConstructor(sourcesCls).newInstance(enumVal)
