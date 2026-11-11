@@ -1113,6 +1113,42 @@ class TraeModelPatch : IXposedHookLoadPackage {
      * 直接在 render 返回后覆盖成亮色最直接，也不会影响普通消息。
      */
     private fun hookThoughtText(cl: ClassLoader) {
+        // 方案 A：直接改取色入口。
+        // 思考正文和思考状态分别由 ThoughtRenderer / ThinkingRenderer 渲染，
+        // 二者都用 ContextCompat.getColor(context, com.bytedance.trae.common_ui.R.color.xxx)
+        // 取色。common_ui 里这套文字色在深色下偏灰，所以从这里统一替换，
+        // 比逐个 hook render 覆盖面更全。
+        val overrides = HashMap<Int, Int>()
+        runCatching {
+            val colorCls = Class.forName("com.bytedance.trae.common_ui.R\$color", false, cl)
+            fun id(name: String): Int = colorCls.getField(name).getInt(null)
+            overrides[id("trae_text_text_default")] = 0xFFE5E5E5.toInt()
+            overrides[id("trae_text_text_secondary")] = 0xFFC0C0C0.toInt()
+            overrides[id("trae_text_text_tertiary")] = 0xFFA8A8A8.toInt()
+        }.onFailure { XposedBridge.log("$TAG: common_ui color ids failed -> ${it.message}") }
+        XposedBridge.log("$TAG: common_ui text color overrides=${overrides.size}")
+
+        if (overrides.isNotEmpty()) {
+            runCatching {
+                val compatCls = XposedHelpers.findClass(
+                    "androidx.core.content.ContextCompat", cl,
+                )
+                XposedHelpers.findAndHookMethod(
+                    compatCls, "getColor",
+                    android.content.Context::class.java, java.lang.Integer.TYPE,
+                    object : XC_MethodHook() {
+                        override fun afterHookedMethod(param: MethodHookParam) {
+                            val id = (param.args.getOrNull(1) as? Number)?.toInt() ?: return
+                            val c = overrides[id] ?: return
+                            param.result = c
+                        }
+                    },
+                )
+                XposedBridge.log("$TAG: ContextCompat.getColor hook installed")
+            }.onFailure { XposedBridge.log("$TAG: getColor hook skipped -> ${it.message}") }
+        }
+
+        // 方案 B：兜底，直接改 render 返回的 View。
         runCatching {
             val rendererCls = XposedHelpers.findClass(
                 "com.bytedance.trae.conversation.chat.block.renderer.ThoughtRenderer", cl,
