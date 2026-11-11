@@ -651,6 +651,23 @@ class TraeModelPatch : IXposedHookLoadPackage {
     }
 
     /**
+     * 把父容器的圆角背景改成深色，保留原有圆角和描边。
+     *
+     * 用于 toast 这类 wrap_content 的小容器：它们不满足「满宽」条件，
+     * 走不到 paintWhiteSurface，但同样是白底白字。
+     */
+    private fun darkenParentBackground(v: android.view.View) {
+        val parent = v.parent as? android.view.View ?: return
+        val bg = parent.background as? android.graphics.drawable.GradientDrawable ?: return
+        runCatching {
+            val copy = bg.constantState?.newDrawable()?.mutate() as? android.graphics.drawable.GradientDrawable
+                ?: return
+            copy.setColor(0xFF2A2A2A.toInt())
+            parent.background = copy
+        }
+    }
+
+    /**
      * 是否横向铺满。
      *
      * 判定：
@@ -778,6 +795,12 @@ class TraeModelPatch : IXposedHookLoadPackage {
         "btn_plus",
         "btn_microphone",
         "btn_hold_to_talk",
+        // toast：trae_layout_inline_toast.xml 的根是 wrap_content，
+        // 不满足「满宽」条件，所以白色底一直没被处理，白底白字看不见。
+        "tv_inline_toast_message",
+        // 思考过程正文：trae_item_detail_thought.xml 的 tv_content 用
+        // trae_text_text_secondary，night 值是 #737373，在深色背景上偏暗。
+        "tv_content",
         // 插件 / 技能选择面板的空态类容器。
         // 注意：content_container / search_container 被 6 个布局共用，
         // 按名字全局改会误伤消息气泡，改为在 View 上判断父链里的 title_bar 来决定。
@@ -860,6 +883,17 @@ class TraeModelPatch : IXposedHookLoadPackage {
             //   ic_input_arrow_up.png          (82,71,228) 紫色
             "btn_plus", "btn_microphone", "btn_hold_to_talk" ->
                 (v as? android.widget.ImageView)?.setColorFilter(0xFFE5E5E5.toInt())
+            // toast 文字本身跟随主题（是浅色），问题在它的容器背景。
+            // 容器是 wrap_content，满宽判断永远不成立，所以这里直接把父容器
+            // 的圆角背景复制一份改成深色，保留 16dip 圆角和描边。
+            "tv_inline_toast_message" -> darkenParentBackground(v)
+            // 思考过程正文提亮。#737373 是 secondary 的 night 值，
+            // 只在当前确实是这个值时才改，避免影响到其它用同名 id 的 TextView。
+            "tv_content" -> (v as? android.widget.TextView)?.let { tv ->
+                if (tv.currentTextColor == 0xFF737373.toInt()) {
+                    tv.setTextColor(0xFFB8B8B8.toInt())
+                }
+            }
         }
     }
 

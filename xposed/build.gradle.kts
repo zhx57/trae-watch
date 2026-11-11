@@ -11,8 +11,8 @@ android {
         applicationId = "com.trae.watch.xposed"
         minSdk = 27
         targetSdk = 33
-        versionCode = 5
-        versionName = "1.0.4"
+        versionCode = 6
+        versionName = "1.0.5"
     }
 
     signingConfigs {
