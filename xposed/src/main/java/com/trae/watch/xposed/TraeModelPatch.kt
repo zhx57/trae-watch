@@ -134,6 +134,7 @@ class TraeModelPatch : IXposedHookLoadPackage {
             hookDarkModeViewTree(lpparam.classLoader)
             hookWhiteBackground(lpparam.classLoader)
             hookSendIconResources(lpparam.classLoader)
+            hookBlackText()
             hookComposeDarkTheme(lpparam.classLoader)
             hookComposeContextWrapper(lpparam.classLoader)
             // init() 可能在 hook 装上前就跑过了，这里主动补一刀
@@ -622,23 +623,23 @@ class TraeModelPatch : IXposedHookLoadPackage {
      * 这样圆角和描边都保留，也不会污染其它共享同一 ConstantState 的 View。
      */
     private fun paintWhiteSurface(v: android.view.View) {
+        // 情况 A：纯色 ColorDrawable。
+        // loading_progress_bar_voice.xml 的根就是一个纯色：
+        //   android:background="@android:0106000D"（系统白）
+        // 它是 ColorDrawable 不是 GradientDrawable，之前全部漏掉，
+        // 导致语音长按时的白色遮罩一直存在。
+        val cd = v.background as? android.graphics.drawable.ColorDrawable
+        if (cd != null) {
+            if (!isNearOpaqueWhite(cd.color)) return
+            if (!isWide(v)) return
+            v.setBackgroundColor(0xFF1E1E1E.toInt())
+            XposedBridge.log("$TAG: white color surface darkened id=${v.id}")
+            return
+        }
+
         val bg = v.background as? android.graphics.drawable.GradientDrawable ?: return
         val lp = v.layoutParams ?: return
-        val screenW = v.resources.displayMetrics.widthPixels
-        // 「横向铺满」的判定：
-        //   1) MATCH_PARENT（-1）
-        //   2) 显式写死的宽像素 > 屏幕 80%
-        //   3) 已经完成布局，实测宽度 >= 屏幕 80%
-        //      —— bottom_sheet_skills.xml 的 title_bar 用的是 ConstraintLayout
-        //         的 match_constraint 写法（width=0 + 左右约束），layoutParams.width
-        //         是 0，只有 layout 之后的 v.width 才是屏幕宽。之前只用
-        //         layoutParams 判断，把它整个漏掉了，所以技能菜单上半块一直白。
-        //         模块没有 constraintlayout 依赖，无法引用那个 LayoutParams 类，
-        //         因此统一靠 v.width 兜底，onAttachedToWindow 里已 post 到布局之后。
-        val wide = lp.width == android.view.ViewGroup.LayoutParams.MATCH_PARENT ||
-            lp.width > screenW * 0.8f ||
-            v.width >= screenW * 0.8f
-        if (!wide) return
+        if (!isWide(v, lp)) return
         val csl = runCatching { bg.color }.getOrNull() ?: return
         if (csl.isStateful) return
         if (!isNearOpaqueWhite(csl.defaultColor)) return
@@ -647,6 +648,29 @@ class TraeModelPatch : IXposedHookLoadPackage {
         gd.setColor(0xFF1E1E1E.toInt())
         v.background = gd
         XposedBridge.log("$TAG: white surface darkened id=${v.id}")
+    }
+
+    /**
+     * 是否横向铺满。
+     *
+     * 判定：
+     *   1) MATCH_PARENT（-1）
+     *   2) 显式写死的宽像素 > 屏幕 80%
+     *   3) 已经完成布局，实测宽度 >= 屏幕 80%
+     *      —— bottom_sheet_skills.xml 的 title_bar 用的是 ConstraintLayout
+     *         的 match_constraint 写法（width=0 + 左右约束），layoutParams.width
+     *         是 0，只有 layout 之后的 v.width 才是屏幕宽。
+     */
+    private fun isWide(
+        v: android.view.View,
+        lp: android.view.ViewGroup.LayoutParams? = v.layoutParams,
+    ): Boolean {
+        val screenW = v.resources.displayMetrics.widthPixels
+        if (lp != null) {
+            if (lp.width == android.view.ViewGroup.LayoutParams.MATCH_PARENT) return true
+            if (lp.width > screenW * 0.8f) return true
+        }
+        return v.width >= screenW * 0.8f
     }
 
     /**
@@ -722,13 +746,13 @@ class TraeModelPatch : IXposedHookLoadPackage {
         }.onFailure { XposedBridge.log("$TAG: setBackgroundColor hook skipped -> ${it.message}") }
     }
 
-    /** 判定是否接近纯白且基本不透明 */
+    /** 判定是否接近纯白。alpha 门槛放到 0xB0，覆盖 #B3FFFFFF 这种半透明白底 */
     private fun isNearOpaqueWhite(color: Int): Boolean {
         val a = (color ushr 24) and 0xFF
         val r = (color ushr 16) and 0xFF
         val g = (color ushr 8) and 0xFF
         val b = color and 0xFF
-        return a >= 0xE0 && r >= 0xE8 && g >= 0xE8 && b >= 0xE8
+        return a >= 0xB0 && r >= 0xE8 && g >= 0xE8 && b >= 0xE8
     }
 
     /** 需要处理的控件名 */
@@ -858,6 +882,18 @@ class TraeModelPatch : IXposedHookLoadPackage {
             "ic_input_bar_microphone",
             "ic_hold_to_talk",
             "ic_input_arrow_up_enable",
+            // 消息长按菜单 / 会话三点菜单的图标，实测像素：
+            //   ic_menu_copy.png              (49,53,58)  深灰
+            //   ic_menu_delete.png            (49,53,58)  深灰
+            //   ic_menu_revert.png            (48,53,58)  深灰
+            //   ic_conversation_rename.png    (27,27,26)  近黑
+            //   ic_conversation_menu_artifact.png (27,27,26) 近黑
+            // ic_conversation_delete.png 是红色 (231,70,58)，本身可见，不放进来。
+            "ic_menu_copy",
+            "ic_menu_delete",
+            "ic_menu_revert",
+            "ic_conversation_rename",
+            "ic_conversation_menu_artifact",
         )
         val ids = HashMap<String, Int>()
         for (nm in names) {
@@ -885,6 +921,82 @@ class TraeModelPatch : IXposedHookLoadPackage {
             )
             XposedBridge.log("$TAG: setImageResource icon tint installed")
         }.onFailure { XposedBridge.log("$TAG: setImageResource hook skipped -> ${it.message}") }
+
+        // XML 里的 android:src 不走 setImageResource。
+        // ImageView 构造函数读 styleable 时是：
+        //     mResource = mSrcResId = a.getResourceId(...);
+        //     setImageDrawable(drawable);
+        // 所以 hook setImageDrawable，再反射读 mSrcResId 就能拿到资源 id，
+        // 精确知道这张图是不是我们要提亮的那几张。
+        runCatching {
+            XposedHelpers.findAndHookMethod(
+                android.widget.ImageView::class.java,
+                "setImageDrawable", android.graphics.drawable.Drawable::class.java,
+                object : XC_MethodHook() {
+                    override fun afterHookedMethod(param: MethodHookParam) {
+                        val iv = param.thisObject as? android.widget.ImageView ?: return
+                        val srcId = runCatching {
+                            XposedHelpers.getIntField(iv, "mSrcResId")
+                        }.getOrNull() ?: return
+                        val color = recolor[srcId] ?: return
+                        iv.setColorFilter(color)
+                    }
+                },
+            )
+            XposedBridge.log("$TAG: setImageDrawable icon tint installed")
+        }.onFailure { XposedBridge.log("$TAG: setImageDrawable hook skipped -> ${it.message}") }
+    }
+
+    /**
+     * K. 硬编码纯黑文字统一提亮。
+     *
+     * trae_revert_dialog.xml 里三处文字都是写死的 #FF000000：
+     *   tv_dialog_title / tv_message / btn_cancel
+     * 没有 night 变体，也不引用任何主题色，所以深色背景下完全看不见。
+     * btn_confirm 是 #FFFF050A 红色，属于危险操作提示，保持不动。
+     *
+     * 这里只处理「不透明且 RGB 全部 <= 0x20」的纯黑/近黑，
+     * 不会碰品牌色、状态色和任何带透明度的文字。
+     */
+    private fun hookBlackText() {
+        val hook = object : XC_MethodHook() {
+            override fun beforeHookedMethod(param: MethodHookParam) {
+                val c = (param.args[0] as? Number)?.toInt() ?: return
+                if (isNearBlack(c)) param.args[0] = 0xFFE5E5E5.toInt()
+            }
+        }
+        runCatching {
+            XposedHelpers.findAndHookMethod(
+                android.widget.TextView::class.java,
+                "setTextColor", java.lang.Integer.TYPE, hook,
+            )
+        }.onFailure { XposedBridge.log("$TAG: textColor(int) hook skipped -> ${it.message}") }
+
+        // XML 的 android:textColor 在 TextView 构造里走 ColorStateList 重载
+        runCatching {
+            XposedHelpers.findAndHookMethod(
+                android.widget.TextView::class.java,
+                "setTextColor", android.content.res.ColorStateList::class.java,
+                object : XC_MethodHook() {
+                    override fun beforeHookedMethod(param: MethodHookParam) {
+                        val csl = param.args[0] as? android.content.res.ColorStateList ?: return
+                        if (csl.isStateful) return
+                        if (!isNearBlack(csl.defaultColor)) return
+                        param.args[0] = android.content.res.ColorStateList.valueOf(0xFFE5E5E5.toInt())
+                    }
+                },
+            )
+            XposedBridge.log("$TAG: black text hook installed")
+        }.onFailure { XposedBridge.log("$TAG: textColor(csl) hook skipped -> ${it.message}") }
+    }
+
+    /** 不透明且 RGB 都 <= 0x20 视为纯黑 */
+    private fun isNearBlack(c: Int): Boolean {
+        val a = (c ushr 24) and 0xFF
+        if (a < 0x80) return false
+        return ((c ushr 16) and 0xFF) <= 0x20 &&
+            ((c ushr 8) and 0xFF) <= 0x20 &&
+            (c and 0xFF) <= 0x20
     }
 
     /** 生成一个纯色圆角 drawable */
