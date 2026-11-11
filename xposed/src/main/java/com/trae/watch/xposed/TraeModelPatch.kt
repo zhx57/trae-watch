@@ -129,7 +129,6 @@ class TraeModelPatch : IXposedHookLoadPackage {
             // 技能数据：恢复注入。实测删掉之后列表直接空了 —— 说明普通/账号级
             // 接口在当前场景返回空，插件技能组是唯一有内容的来源。
             hookRemoteSkills(lpparam.classLoader)
-            installSkillDiagnostics(lpparam.classLoader)
             hookDarkMode(lpparam.classLoader)
             // 最后一层兜底：Activity 内容就绪后直接遍历 View 树刷成深色。
             // 前面那些资源层 hook 依赖的东西太多（资源解析时机、night 变体是否
@@ -641,7 +640,6 @@ class TraeModelPatch : IXposedHookLoadPackage {
             if (!isNearOpaqueWhite(cd.color)) return
             if (!isWide(v)) return
             v.setBackgroundColor(0xFF1E1E1E.toInt())
-            XposedBridge.log("$TAG: white color surface darkened id=${v.id}")
             return
         }
 
@@ -655,7 +653,6 @@ class TraeModelPatch : IXposedHookLoadPackage {
         val gd = copy as? android.graphics.drawable.GradientDrawable ?: return
         gd.setColor(0xFF1E1E1E.toInt())
         v.background = gd
-        XposedBridge.log("$TAG: white surface darkened id=${v.id}")
     }
 
     /**
@@ -989,7 +986,6 @@ class TraeModelPatch : IXposedHookLoadPackage {
             ids[nm] = id
             recolor[id] = 0xFFE5E5E5.toInt()
         }
-        XposedBridge.log("$TAG: send icon ids resolved=${ids.keys}")
 
         runCatching {
             XposedHelpers.findAndHookMethod(
@@ -1128,7 +1124,6 @@ class TraeModelPatch : IXposedHookLoadPackage {
             overrides[id("trae_text_text_secondary")] = 0xFFC0C0C0.toInt()
             overrides[id("trae_text_text_tertiary")] = 0xFFA8A8A8.toInt()
         }.onFailure { XposedBridge.log("$TAG: common_ui color ids failed -> ${it.message}") }
-        XposedBridge.log("$TAG: common_ui text color overrides=${overrides.size}")
 
         if (overrides.isNotEmpty()) {
             runCatching {
@@ -1170,96 +1165,6 @@ class TraeModelPatch : IXposedHookLoadPackage {
             )
             XposedBridge.log("$TAG: thought text hook installed")
         }.onFailure { XposedBridge.log("$TAG: thought text hook skipped -> ${it.message}") }
-    }
-
-    /**
-     * M. 技能加载诊断（临时）。
-     *
-     * 已确认入口可见性恒为 true（ChatAttachmentConfig 的 SKILLS lambda 直接
-     * return true），所以「技能少」只可能是数据层问题。
-     * 这一段把关键节点记到文件，便于定位真实原因：
-     *   /sdcard/Android/data/com.bytedance.trae.cn/files/trae_patch.log
-     */
-    private fun installSkillDiagnostics(cl: ClassLoader) {
-        val tag = "$TAG[diag]"
-
-        fun log(msg: String) {
-            XposedBridge.log("$tag: $msg")
-            runCatching {
-                val app = XposedHelpers.callStaticMethod(
-                    XposedHelpers.findClass("android.app.ActivityThread", null),
-                    "currentApplication",
-                ) as? android.content.Context ?: return
-                val dir = app.getExternalFilesDir(null) ?: app.filesDir
-                java.io.File(dir, "trae_patch.log")
-                    .appendText("${System.currentTimeMillis()} $msg\n")
-            }
-        }
-
-        // 1) 打开技能面板时，记录设备类型和上下文参数
-        runCatching {
-            val fragmentCls = XposedHelpers.findClass(
-                "com.bytedance.trae.conversation.widget.InputFragment", cl,
-            )
-            val deviceCls = XposedHelpers.findClass(
-                "com.bytedance.trae.conversation.devices.SelectedDeviceItem", cl,
-            )
-            XposedHelpers.findAndHookMethod(
-                fragmentCls, "showSkillsBottomSheetForDevice",
-                deviceCls, java.lang.Boolean.TYPE,
-                object : XC_MethodHook() {
-                    override fun beforeHookedMethod(param: MethodHookParam) {
-                        val d = param.args[0]
-                        val type = runCatching { XposedHelpers.callMethod(d, "getType") }.getOrNull()
-                        val id = runCatching { XposedHelpers.callMethod(d, "getId") }.getOrNull()
-                        val dir = runCatching { XposedHelpers.callMethod(d, "getSelectedDirectory") }.getOrNull()
-                        val pid = runCatching { XposedHelpers.callMethod(d, "getProjectId") }.getOrNull()
-                        log("open skills type=$type id=$id dir=$dir pid=$pid")
-                    }
-                },
-            )
-        }.onFailure { log("hook showSkillsBottomSheetForDevice failed: ${it.message}") }
-
-        // 2) 记录每次接口返回的技能数量
-        runCatching {
-            val dataCls = XposedHelpers.findClass(
-                "com.bytedance.trae.conversation.network.ListSkillsData", cl,
-            )
-            XposedHelpers.findAndHookMethod(
-                dataCls, "getAllItems",
-                object : XC_MethodHook() {
-                    override fun afterHookedMethod(param: MethodHookParam) {
-                        val list = param.result as? List<*> ?: return
-                        log("api items=${list.size}")
-                    }
-                },
-            )
-        }.onFailure { log("hook getAllItems failed: ${it.message}") }
-
-        // 3) 记录最终发布到 UI 的数量，以及是否走了 Hub
-        runCatching {
-            val vmCls = XposedHelpers.findClass(
-                "com.bytedance.trae.conversation.skill.SkillsViewModel", cl,
-            )
-            XposedHelpers.findAndHookMethod(
-                vmCls, "publishSkills",
-                object : XC_MethodHook() {
-                    override fun afterHookedMethod(param: MethodHookParam) {
-                        val vm = param.thisObject
-                        val ordinary = runCatching {
-                            XposedHelpers.getObjectField(vm, "ordinarySkills") as? List<*>
-                        }.getOrNull()
-                        val plugin = runCatching {
-                            XposedHelpers.getObjectField(vm, "pluginSkills") as? List<*>
-                        }.getOrNull()
-                        val cliId = runCatching {
-                            XposedHelpers.getObjectField(vm, "cliId")
-                        }.getOrNull()
-                        log("publish ordinary=${ordinary?.size} plugin=${plugin?.size} cliId=$cliId")
-                    }
-                },
-            )
-        }.onFailure { log("hook publishSkills failed: ${it.message}") }
     }
 
     /**
