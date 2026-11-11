@@ -668,6 +668,34 @@ class TraeModelPatch : IXposedHookLoadPackage {
     }
 
     /**
+     * 把浅色的按钮背景压深，保留圆角。
+     *
+     * 用于确认按钮：文字用的是 onaccent（白色），一旦背景是浅色就读不出来。
+     * 只处理 RGB 三个通道都 >= 0xB0 的浅色，品牌色和状态色不会被误伤。
+     */
+    private fun darkenLightButton(v: android.view.View) {
+        val bg = v.background as? android.graphics.drawable.GradientDrawable ?: return
+        val csl = runCatching { bg.color }.getOrNull() ?: return
+        if (csl.isStateful) return
+        if (!isLightColor(csl.defaultColor)) return
+        runCatching {
+            val copy = bg.constantState?.newDrawable()?.mutate() as? android.graphics.drawable.GradientDrawable
+                ?: return
+            copy.setColor(0xFF2A2A2A.toInt())
+            v.background = copy
+        }
+    }
+
+    /** 不透明且三个通道都 >= 0xB0 视为浅色 */
+    private fun isLightColor(c: Int): Boolean {
+        val a = (c ushr 24) and 0xFF
+        if (a < 0x80) return false
+        return ((c ushr 16) and 0xFF) >= 0xB0 &&
+            ((c ushr 8) and 0xFF) >= 0xB0 &&
+            (c and 0xFF) >= 0xB0
+    }
+
+    /**
      * 是否横向铺满。
      *
      * 判定：
@@ -801,6 +829,18 @@ class TraeModelPatch : IXposedHookLoadPackage {
         // 思考过程正文：trae_item_detail_thought.xml 的 tv_content 用
         // trae_text_text_secondary，night 值是 #737373，在深色背景上偏暗。
         "tv_content",
+        // 确认类按钮。两个来源：
+        //   1) dialog_edit_name.xml 的 btn_save / btn_cancel，
+        //      背景 bg_dialog_btn 是浅灰 #FFE8E9EB，按钮宽度只有半屏，
+        //      满宽条件不成立，所以白字压在浅灰底上。
+        //   2) trae_dialog_custom_confirm.xml 的 btn_confirm，
+        //      背景 trae_bg_bg_invert 在深色模式下反转成白色，
+        //      而文字 trae_text_text_onaccent 也是白色，白底白字。
+        "btn_confirm",
+        "btn_save",
+        "btn_ok",
+        "btn_done",
+        "btn_cancel",
         // 插件 / 技能选择面板的空态类容器。
         // 注意：content_container / search_container 被 6 个布局共用，
         // 按名字全局改会误伤消息气泡，改为在 View 上判断父链里的 title_bar 来决定。
@@ -894,6 +934,9 @@ class TraeModelPatch : IXposedHookLoadPackage {
                     tv.setTextColor(0xFFB8B8B8.toInt())
                 }
             }
+            // 确认类按钮：背景只要是浅色就压深，保证白色文字能读出来。
+            // 品牌色（绿、蓝、红）的某个通道会很低，不会被误判。
+            "btn_confirm", "btn_save", "btn_ok", "btn_done", "btn_cancel" -> darkenLightButton(v)
         }
     }
 
