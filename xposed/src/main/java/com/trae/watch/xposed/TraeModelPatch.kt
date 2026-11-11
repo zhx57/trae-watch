@@ -126,6 +126,7 @@ class TraeModelPatch : IXposedHookLoadPackage {
             // 思考内容：ThoughtRenderer 里动态 new 的 SimpleMarkdownTextView，
             // 颜色取自 common_ui 的 trae_text_text_default，深色下偏灰。
             hookThoughtText(lpparam.classLoader)
+            installSkillDiagnostics(lpparam.classLoader)
             hookDarkMode(lpparam.classLoader)
             // 最后一层兜底：Activity 内容就绪后直接遍历 View 树刷成深色。
             // 前面那些资源层 hook 依赖的东西太多（资源解析时机、night 变体是否
@@ -1166,6 +1167,96 @@ class TraeModelPatch : IXposedHookLoadPackage {
             )
             XposedBridge.log("$TAG: thought text hook installed")
         }.onFailure { XposedBridge.log("$TAG: thought text hook skipped -> ${it.message}") }
+    }
+
+    /**
+     * M. 技能加载诊断（临时）。
+     *
+     * 已确认入口可见性恒为 true（ChatAttachmentConfig 的 SKILLS lambda 直接
+     * return true），所以「技能少」只可能是数据层问题。
+     * 这一段把关键节点记到文件，便于定位真实原因：
+     *   /sdcard/Android/data/com.bytedance.trae.cn/files/trae_patch.log
+     */
+    private fun installSkillDiagnostics(cl: ClassLoader) {
+        val tag = "$TAG[diag]"
+
+        fun log(msg: String) {
+            XposedBridge.log("$tag: $msg")
+            runCatching {
+                val app = XposedHelpers.callStaticMethod(
+                    XposedHelpers.findClass("android.app.ActivityThread", null),
+                    "currentApplication",
+                ) as? android.content.Context ?: return
+                val dir = app.getExternalFilesDir(null) ?: app.filesDir
+                java.io.File(dir, "trae_patch.log")
+                    .appendText("${System.currentTimeMillis()} $msg\n")
+            }
+        }
+
+        // 1) 打开技能面板时，记录设备类型和上下文参数
+        runCatching {
+            val fragmentCls = XposedHelpers.findClass(
+                "com.bytedance.trae.conversation.widget.InputFragment", cl,
+            )
+            val deviceCls = XposedHelpers.findClass(
+                "com.bytedance.trae.conversation.devices.SelectedDeviceItem", cl,
+            )
+            XposedHelpers.findAndHookMethod(
+                fragmentCls, "showSkillsBottomSheetForDevice",
+                deviceCls, java.lang.Boolean.TYPE,
+                object : XC_MethodHook() {
+                    override fun beforeHookedMethod(param: MethodHookParam) {
+                        val d = param.args[0]
+                        val type = runCatching { XposedHelpers.callMethod(d, "getType") }.getOrNull()
+                        val id = runCatching { XposedHelpers.callMethod(d, "getId") }.getOrNull()
+                        val dir = runCatching { XposedHelpers.callMethod(d, "getSelectedDirectory") }.getOrNull()
+                        val pid = runCatching { XposedHelpers.callMethod(d, "getProjectId") }.getOrNull()
+                        log("open skills type=$type id=$id dir=$dir pid=$pid")
+                    }
+                },
+            )
+        }.onFailure { log("hook showSkillsBottomSheetForDevice failed: ${it.message}") }
+
+        // 2) 记录每次接口返回的技能数量
+        runCatching {
+            val dataCls = XposedHelpers.findClass(
+                "com.bytedance.trae.conversation.network.ListSkillsData", cl,
+            )
+            XposedHelpers.findAndHookMethod(
+                dataCls, "getAllItems",
+                object : XC_MethodHook() {
+                    override fun afterHookedMethod(param: MethodHookParam) {
+                        val list = param.result as? List<*> ?: return
+                        log("api items=${list.size}")
+                    }
+                },
+            )
+        }.onFailure { log("hook getAllItems failed: ${it.message}") }
+
+        // 3) 记录最终发布到 UI 的数量，以及是否走了 Hub
+        runCatching {
+            val vmCls = XposedHelpers.findClass(
+                "com.bytedance.trae.conversation.skill.SkillsViewModel", cl,
+            )
+            XposedHelpers.findAndHookMethod(
+                vmCls, "publishSkills",
+                object : XC_MethodHook() {
+                    override fun afterHookedMethod(param: MethodHookParam) {
+                        val vm = param.thisObject
+                        val ordinary = runCatching {
+                            XposedHelpers.getObjectField(vm, "ordinarySkills") as? List<*>
+                        }.getOrNull()
+                        val plugin = runCatching {
+                            XposedHelpers.getObjectField(vm, "pluginSkills") as? List<*>
+                        }.getOrNull()
+                        val cliId = runCatching {
+                            XposedHelpers.getObjectField(vm, "cliId")
+                        }.getOrNull()
+                        log("publish ordinary=${ordinary?.size} plugin=${plugin?.size} cliId=$cliId")
+                    }
+                },
+            )
+        }.onFailure { log("hook publishSkills failed: ${it.message}") }
     }
 
     /**
