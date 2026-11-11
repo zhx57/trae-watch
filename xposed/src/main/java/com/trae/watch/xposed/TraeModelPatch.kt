@@ -1646,23 +1646,29 @@ class TraeModelPatch : IXposedHookLoadPackage {
             )
         }.onFailure { XposedBridge.log("$TAG: rollout hook skipped -> ${it.message}") }
 
-        // 3) 兜底：插件入口恒可见（isPluginVisible 只控制 PLUGINS）
-        runCatching {
-            val cfgCls = XposedHelpers.findClass(CLS_ATTACHMENT_CONFIG, cl)
-            XposedHelpers.findAndHookMethod(
-                cfgCls,
-                "isPluginVisible",
-                XposedHelpers.findClass(CLS_CHAT_MODE, cl),
-                java.lang.Boolean.TYPE,
-                java.lang.Boolean.TYPE,
-                String::class.java,
-                object : XC_MethodHook() {
-                    override fun afterHookedMethod(param: MethodHookParam) {
-                        param.result = true
-                    }
-                },
-            )
-        }.onFailure { XposedBridge.log("$TAG: plugin visible hook skipped -> ${it.message}") }
+        // 3) 【已移除 isPluginVisible 的 hook】
+        //
+        // 这个 hook 之前强制返回 true，但它的返回值不只控制插件入口，
+        // 还会被 showSkillsBottomSheet 当作第 8 个参数 includePluginSkills 传给
+        // SkillsBottomSheet.newInstance：
+        //
+        //   companion.newInstance(cliId, workspaceFolder, projectId, isIdeSkills,
+        //       conversationId, configName, agentType,
+        //       chatAttachmentConfig.isPluginVisible(...),   // ← includePluginSkills
+        //       analyticsChatMode);
+        //
+        // 而 SkillsViewModel.loadSkills() 里：
+        //   pluginSkillsResolved = !includePluginSkills;
+        //   if (includePluginSkills) launch { pluginSkills = ...; publishSkills() }
+        //   fetchSkills(false);
+        //
+        // 也就是说，强制 true 会改变技能列表的发布分支和时序，把本来正常的
+        // 技能加载搅乱。这是「技能变少」的直接原因。
+        //
+        // 插件入口可见性已经由上面的 Feature.PLUGIN 开关保证：
+        //   entries$lambda$3 = !isIde && FeatureCapability.isEnabled(PLUGIN)
+        //                      && PluginCapability.isSupported(...)
+        // Feature 恒为 true 后，PLUGINS 自然可见，不需要再动 isPluginVisible。
     }
 
     /** 按枚举名往 set 里补一个 ContextSource 元素 */
