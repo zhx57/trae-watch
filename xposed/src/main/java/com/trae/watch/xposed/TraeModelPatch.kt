@@ -217,11 +217,9 @@ class TraeModelPatch : IXposedHookLoadPackage {
         // 需要的 Source 行。
         // ContextSource 枚举全集是：
         //   PROJECT_FILES, SKILLS, PLUGINS, LIBRARY, LARK_DOCS, LARK_CONTACTS
-        // 用户在远程 PC 会话里要的是「插件」和「飞书文档」，
-        // 所以这里必须包含 PLUGINS 和 LARK_DOCS。
-        // 原来只补了 PROJECT_FILES / PLUGINS / SKILLS，缺 LARK_DOCS，
-        // 导致飞书文档入口根本不出现。
-        for (source in listOf("PROJECT_FILES", "PLUGINS", "SKILLS", "LARK_DOCS")) {
+        // 用户明确要求：技能交回 TRAE 原生，不要 hook 干预，
+        // 这里只补「插件」和「飞书文档」。
+        for (source in listOf("PROJECT_FILES", "PLUGINS", "LARK_DOCS")) {
             runCatching {
                 val enumVal = XposedHelpers.callStaticMethod(sourcesCls, "valueOf", source)
                 val row = rowSourceCls.getDeclaredConstructor(sourcesCls).newInstance(enumVal)
@@ -1536,7 +1534,8 @@ class TraeModelPatch : IXposedHookLoadPackage {
             )
         }.onFailure { XposedBridge.log("$TAG: feature hook skipped -> ${it.message}") }
 
-        // 2) 可用输入源：确保包含 PLUGINS / SKILLS
+        // 2) 可用输入源：只确保 PLUGINS。
+        //    技能（SKILLS）交回 TRAE 原生判断，不再强行注入。
         runCatching {
             val policyCls = XposedHelpers.findClass(CLS_ROLLOUT_POLICY, cl)
             XposedHelpers.findAndHookMethod(
@@ -1547,7 +1546,7 @@ class TraeModelPatch : IXposedHookLoadPackage {
                         // 返回值可能是不可变集合，不能原地 add，必须另建一个
                         val origin = param.result as? Set<*> ?: return
                         val merged = LinkedHashSet<Any?>(origin)
-                        for (name in listOf("PLUGINS", "SKILLS")) {
+                        for (name in listOf("PLUGINS")) {
                             addSourceByName(cl, merged, name)
                         }
                         param.result = merged
@@ -1556,7 +1555,7 @@ class TraeModelPatch : IXposedHookLoadPackage {
             )
         }.onFailure { XposedBridge.log("$TAG: rollout hook skipped -> ${it.message}") }
 
-        // 3) 兜底：技能入口恒可见
+        // 3) 兜底：插件入口恒可见（isPluginVisible 只控制 PLUGINS）
         runCatching {
             val cfgCls = XposedHelpers.findClass(CLS_ATTACHMENT_CONFIG, cl)
             XposedHelpers.findAndHookMethod(
